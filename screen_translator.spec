@@ -40,7 +40,6 @@ excludes = [
     "scipy",
     "pandas",
     "IPython",
-    "PIL",
     "PySide6.QtWebEngine",
     "PySide6.QtWebEngineCore",
     "PySide6.QtWebEngineWidgets",

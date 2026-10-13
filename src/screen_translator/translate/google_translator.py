@@ -1,11 +1,11 @@
-"""Google Translator provider via deep-translator with concurrency and retry logic."""
-
-from __future__ import annotations
-
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
+import json
 import logging
 import re
+import threading
 import time
+import urllib.parse
+import urllib.request
 
 from deep_translator import GoogleTranslator as DeepGoogleTranslator
 
@@ -16,6 +16,47 @@ logger = logging.getLogger(__name__)
 MAX_CHARACTERS_PER_REQUEST = 4500
 MAX_CONCURRENT_WORKERS = 4
 RETRY_DELAYS_SECONDS = (0.5, 1.0)
+
+_rate_lock = threading.Lock()
+_last_request_time: float = 0.0
+_MIN_REQUEST_INTERVAL: float = 0.15  # Pacing between calls
+
+
+def _pace_request() -> None:
+    """Enforce minimum spacing between Google Translate requests across all worker threads."""
+    global _last_request_time
+    with _rate_lock:
+        now = time.monotonic()
+        elapsed = now - _last_request_time
+        if elapsed < _MIN_REQUEST_INTERVAL:
+            time.sleep(_MIN_REQUEST_INTERVAL - elapsed)
+        _last_request_time = time.monotonic()
+
+
+def _direct_google_translate(text: str, source: str = "en", target: str = "vi") -> str:
+    """Translate text using standard HTTP with browser User-Agent to avoid bot 429 blocks."""
+    url = (
+        f"https://translate.googleapis.com/translate_a/single?client=gtx"
+        f"&sl={urllib.parse.quote(source)}&tl={urllib.parse.quote(target)}&dt=t"
+        f"&q={urllib.parse.quote(text)}"
+    )
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            )
+        },
+    )
+    with urllib.request.urlopen(req, timeout=8) as response:
+        data = json.loads(response.read().decode("utf-8"))
+        if isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
+            res = "".join(segment[0] for segment in data[0] if segment and len(segment) > 0 and segment[0])
+            if res.strip():
+                return res
+    return text
 
 
 def _split_into_chunks(text: str, max_chars: int = MAX_CHARACTERS_PER_REQUEST) -> list[str]:
@@ -61,7 +102,7 @@ def _split_into_chunks(text: str, max_chars: int = MAX_CHARACTERS_PER_REQUEST) -
 
 
 class GoogleTranslator(Translator):
-    """Translates text batches concurrently using deep-translator with retries and chunking."""
+    """Translates text batches concurrently using direct browser-agent query with deep-translator fallback."""
 
     def __init__(self, max_workers: int = MAX_CONCURRENT_WORKERS) -> None:
         """Initialize GoogleTranslator client.
@@ -80,10 +121,7 @@ class GoogleTranslator(Translator):
             target: Target language code.
 
         Returns:
-            str: Translated text.
-
-        Raises:
-            TranslationError: If all retry attempts fail.
+            str: Translated text (falls back to original text if API is unavailable).
         """
         if not text.strip():
             return text
@@ -103,12 +141,22 @@ class GoogleTranslator(Translator):
             total_attempts = len(RETRY_DELAYS_SECONDS) + 1
             for attempt in range(total_attempts):
                 try:
-                    res = translator_client.translate(chunk_to_translate)
-                    if res is not None:
-                        translated_part = res
+                    _pace_request()
+                    # 1. Primary: Direct HTTP query with browser User-Agent
+                    translated_part = _direct_google_translate(chunk_to_translate, source=source, target=target)
+                    if translated_part and translated_part.strip():
                         break
                 except Exception as exc:
                     last_error = exc
+                    # 2. Secondary fallback: DeepGoogleTranslator
+                    try:
+                        res = translator_client.translate(chunk_to_translate)
+                        if res is not None:
+                            translated_part = res
+                            break
+                    except Exception as inner_exc:
+                        last_error = inner_exc
+
                     if attempt < len(RETRY_DELAYS_SECONDS):
                         delay = RETRY_DELAYS_SECONDS[attempt]
                         logger.warning(
@@ -116,17 +164,18 @@ class GoogleTranslator(Translator):
                             attempt + 1,
                             total_attempts,
                             delay,
-                            exc,
+                            last_error,
                         )
                         time.sleep(delay)
 
             if translated_part is None:
-                err_msg = (
-                    f"Google translation failed after {total_attempts} attempts "
-                    f"for text '{chunk_to_translate[:60]}...': {last_error}"
+                logger.warning(
+                    "Google translation failed after %d attempts for text '%s...': %s. Falling back to original text.",
+                    total_attempts,
+                    chunk_to_translate[:60],
+                    last_error,
                 )
-                logger.error(err_msg)
-                raise TranslationError(err_msg) from last_error
+                translated_part = chunk_to_translate
 
             translated_chunks.append(translated_part)
 

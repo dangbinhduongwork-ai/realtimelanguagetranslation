@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Any
 
@@ -22,13 +23,20 @@ class MssCapturer(ScreenCapturer):
         """Initialize MSS capturer configuration.
 
         IMPORTANT: mss instances are NOT thread-safe. The mss instance is created
-        lazily on the first grab() call inside the executing thread.
+        lazily on the first grab() call inside each executing thread.
 
         Args:
             monitor_index: Monitor index (1-based; 1 is typically the primary monitor).
         """
         self.monitor_index = monitor_index
-        self._sct: Any | None = None
+        self._local = threading.local()
+
+    def _get_sct(self) -> Any:
+        """Get or lazily initialize thread-local MSS instance."""
+        if not hasattr(self._local, "sct") or self._local.sct is None:
+            logger.debug("Initializing MSS instance in thread %s", threading.get_ident())
+            self._local.sct = mss.mss()
+        return self._local.sct
 
     def grab(self, region: Region | None = None) -> Frame:
         """Capture screen frame from the requested region or active monitor.
@@ -40,12 +48,10 @@ class MssCapturer(ScreenCapturer):
         Returns:
             Frame: Captured BGR frame with actual screen region and monotonic timestamp.
         """
-        if self._sct is None:
-            logger.debug("Lazily initializing MSS instance in current thread")
-            self._sct = mss.mss()
+        sct = self._get_sct()
 
         if region is None:
-            monitors = self._sct.monitors
+            monitors = sct.monitors
             if 1 <= self.monitor_index < len(monitors):
                 mon = monitors[self.monitor_index]
             else:
@@ -77,7 +83,7 @@ class MssCapturer(ScreenCapturer):
             }
             actual_region = region
 
-        sct_img = self._sct.grab(capture_bbox)
+        sct_img = sct.grab(capture_bbox)
 
         # Convert raw BGRA pixels to contiguous 3-channel BGR numpy array
         raw_bgra = np.asarray(sct_img, dtype=np.uint8)
@@ -90,11 +96,11 @@ class MssCapturer(ScreenCapturer):
         )
 
     def close(self) -> None:
-        """Release underlying MSS context."""
-        if self._sct is not None:
+        """Release underlying MSS context for the current thread."""
+        if hasattr(self._local, "sct") and self._local.sct is not None:
             try:
-                self._sct.close()
+                self._local.sct.close()
             except Exception as exc:
                 logger.debug("Error closing MSS instance: %s", exc)
             finally:
-                self._sct = None
+                self._local.sct = None

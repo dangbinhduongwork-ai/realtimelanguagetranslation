@@ -57,5 +57,13 @@ Desktop.ini
 $RECYCLE.BIN/
 .DS_Store
 
-# Local helper scripts
+# Local helper scripts and debug outputs
 push_to_git.bat
+run_test_*.bat
+debug_captured.png
+run_diagnose.bat
+scripts/check_*.py
+scripts/find_*.py
+scripts/inspect_*.py
+scripts/test_*.py
+scripts/diagnose.py

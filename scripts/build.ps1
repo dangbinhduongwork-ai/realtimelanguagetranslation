@@ -40,25 +40,79 @@ Write-Host "====================================================" -ForegroundCol
 Write-Host "Root: $ProjectRoot"
 
 # 1. Verify Python Environment (Python 3.10 - 3.12)
-Write-Host "`n[1/6] Checking Python version..." -ForegroundColor Yellow
+Write-Host "`n[1/6] Checking Python environment..." -ForegroundColor Yellow
+
+$pyCmd = $null
+
+# Check candidate paths first to avoid broken or unregistered Python launchers
+$candidatePaths = @(
+    "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
+    "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
+    "$env:LOCALAPPDATA\Programs\Python\Python310\python.exe",
+    "C:\Program Files\Python311\python.exe",
+    "C:\Program Files\Python312\python.exe",
+    "C:\Program Files\Python310\python.exe"
+)
+
+foreach ($cand in $candidatePaths) {
+    if (Test-Path $cand) {
+        $pyCmd = $cand
+        break
+    }
+}
+
+if (-not $pyCmd) {
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        try {
+            $resolved = (& py -3.11 -c "import sys; print(sys.executable)" 2>$null)
+            if ($resolved -and (Test-Path $resolved.Trim())) {
+                $pyCmd = $resolved.Trim()
+            }
+        } catch {}
+    }
+}
+
+if (-not $pyCmd) {
+    if (Get-Command python -ErrorAction SilentlyContinue) {
+        try {
+            $resolved = (& python -c "import sys; print(sys.executable)" 2>$null)
+            if ($resolved -and (Test-Path $resolved.Trim())) {
+                $pyCmd = $resolved.Trim()
+            }
+        } catch {}
+    }
+}
+
+if (-not $pyCmd) {
+    Write-Error "Python was not found. Please ensure Python (3.10-3.12) is installed."
+    exit 1
+}
+
+Write-Host "Using Python executable: $pyCmd"
+
 try {
-    $pyVer = & python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"
+    $pyVer = & $pyCmd -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"
 } catch {
-    Write-Error "Python is not found in PATH or failed to execute."
+    Write-Error "Failed to execute Python ($pyCmd)."
     exit 1
 }
 
 Write-Host "Detected Python version: $pyVer"
-$match = [regex]::Match($pyVer, '^(\d+)\.(\d+)')
-if ($match.Success) {
-    $major = [int]$match.Groups[1].Value
-    $minor = [int]$match.Groups[2].Value
-    if ($major -ne 3 -or $minor -lt 10 -or $minor -gt 12) {
-        Write-Warning "Python 3.10-3.12 is recommended. Running on Python $pyVer."
+if ($pyVer) {
+    $match = [regex]::Match($pyVer.ToString().Trim(), '^(\d+)\.(\d+)')
+    if ($match.Success) {
+        $major = [int]$match.Groups[1].Value
+        $minor = [int]$match.Groups[2].Value
+        if ($major -ne 3 -or $minor -lt 10 -or $minor -gt 12) {
+            Write-Warning "Python 3.10-3.12 is recommended. Running on Python $pyVer."
+        }
     }
 }
 
 # 2. Clean previous build artifacts if requested
+# Terminate any running ScreenTranslator processes to avoid file locks
+Stop-Process -Name "ScreenTranslator" -Force -ErrorAction SilentlyContinue
+
 if ($Clean) {
     Write-Host "`nCleaning build directories (-Clean requested)..." -ForegroundColor Yellow
     if (Test-Path "$ProjectRoot\build") {
@@ -73,13 +127,13 @@ if ($Clean) {
 
 # 3. Install required build and runtime dependencies
 Write-Host "`n[2/6] Installing dependencies..." -ForegroundColor Yellow
-& python -m pip install -q -r requirements.txt
+& $pyCmd -m pip install -q -r requirements.txt
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Failed to install requirements.txt"
     exit 1
 }
 
-& python -m pip install -q -r requirements-build.txt
+& $pyCmd -m pip install -q -r requirements-build.txt
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Failed to install requirements-build.txt"
     exit 1
@@ -88,7 +142,7 @@ Write-Host "Dependencies are up-to-date."
 
 # 4. Generate application icon
 Write-Host "`n[3/6] Generating icon (assets/app.ico)..." -ForegroundColor Yellow
-& python scripts/make_icon.py
+& $pyCmd scripts/make_icon.py
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Failed to generate application icon."
     exit 1
@@ -105,7 +159,7 @@ if ($Console) {
 }
 
 try {
-    & python -m PyInstaller --clean screen_translator.spec
+    & $pyCmd -m PyInstaller --clean screen_translator.spec
     if ($LASTEXITCODE -ne 0) {
         Write-Error "PyInstaller failed with exit code $LASTEXITCODE"
         exit $LASTEXITCODE
@@ -123,7 +177,24 @@ Write-Host "Built executable at: $exePath" -ForegroundColor Green
 
 # 6. Automated Smoke Test: run dist\ScreenTranslator\ScreenTranslator.exe --check --deep
 Write-Host "`n[5/6] Executing smoke test (--check --deep)..." -ForegroundColor Yellow
-$proc = Start-Process -FilePath $exePath -ArgumentList "--check", "--deep" -Wait -PassThru
+$smokeOut = "$ProjectRoot\build\smoke_stdout.log"
+$smokeErr = "$ProjectRoot\build\smoke_stderr.log"
+if (-not (Test-Path "$ProjectRoot\build")) {
+    New-Item -ItemType Directory -Path "$ProjectRoot\build" -Force | Out-Null
+}
+$proc = Start-Process -FilePath $exePath -ArgumentList "--check", "--deep" -Wait -PassThru -RedirectStandardOutput $smokeOut -RedirectStandardError $smokeErr
+if (Test-Path $smokeOut) {
+    $outText = Get-Content $smokeOut -Raw
+    if ($outText) {
+        Write-Host $outText.Trim()
+    }
+}
+if (Test-Path $smokeErr) {
+    $errText = Get-Content $smokeErr -Raw
+    if ($errText) {
+        Write-Host $errText.Trim() -ForegroundColor Red
+    }
+}
 if ($proc.ExitCode -ne 0) {
     Write-Error "Automated smoke test failed with exit code $($proc.ExitCode)!"
     exit $proc.ExitCode
@@ -133,7 +204,7 @@ Write-Host "Smoke test PASSED! Bundled OCR inference and configs verified succes
 # 7. Package ZIP archive if requested
 if ($Zip) {
     Write-Host "`n[6/6] Creating ZIP distribution..." -ForegroundColor Yellow
-    $appVer = & python -c "import sys; sys.path.insert(0, 'src'); import screen_translator; print(screen_translator.__version__)"
+    $appVer = & $pyCmd -c "import sys; sys.path.insert(0, 'src'); import screen_translator; print(screen_translator.__version__)"
     if (-not $appVer) {
         $appVer = "1.0.0"
     }
