@@ -2,6 +2,8 @@ capture:
   fps: 2
   monitor: 1
   region: null
+  settle_ms: 300
+  max_wait_ms: 1500
 
 change_detection:
   threshold: 0.02
@@ -11,6 +13,8 @@ ocr:
   min_confidence: 0.6
   merge_lines: true
   max_gap_ratio: 0.8
+  upscale: "auto"
+  small_text_px: 14
 
 translate:
   provider: google

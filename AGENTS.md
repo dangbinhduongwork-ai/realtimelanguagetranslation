@@ -66,6 +66,14 @@ always-on-top overlay placed over the original text.
 - `app.py`: Central orchestration wiring `WorkerBridge` queued signal dispatch, `QLockFile` single-instance check, automatic monitor overlap selection via `find_screen_with_largest_overlap()`, and clean termination.
 - `ui/overlay_window.py`: Optional dashed border rendered around active region when `overlay.show_region_border` is enabled.
 
+## Architecture Additions (Stage 5A)
+- `capture/settle.py`: `SettleGate` debouncing continuous motion (scrolling, slide transitions) with `settle_ms` stillness threshold and `max_wait_ms` force-refresh timeout.
+- `capture/frame_diff.py`: Added `rolling=True` mode for previous-tick motion comparison and `commit(image)` to sync baseline upon OCR triggering.
+- `ocr/upscale.py`: Helper functions (`calculate_median_line_height`, `calculate_mean_confidence`, `scale_image`, `remap_blocks_to_screen`) for adaptive image upscaling.
+- `ocr/rapidocr_engine.py`: Adaptive 2x upscale on small text (median line height < `small_text_px`) with re-probing every 20 frames and coordinate remapping.
+- `utils/stabilization.py`: Pure function `blocks_equivalent(prev, new, tol_px=4)` preventing redundant repaints and overlay flicker on static/jittery text.
+- `benchmark.py`: Command `--bench [--frames N]` measuring average and p95 latencies for capture, diff, OCR, grouping, translation, and CPU load.
+
 ## Complete Project Structure
 ```
 screen-translator/
@@ -78,8 +86,9 @@ screen-translator/
 ├─ config.yaml                # Application configuration
 ├─ src/screen_translator/
 │  ├─ __init__.py
-│  ├─ __main__.py             # Entry point supporting --check and --console
+│  ├─ __main__.py             # Entry point supporting --check, --console, and --bench
 │  ├─ app.py                  # Component factory functions, WorkerBridge & wiring
+│  ├─ benchmark.py            # Latency and CPU benchmarking suite
 │  ├─ config.py               # Loads & validates config.yaml into dataclasses
 │  ├─ logging_setup.py        # Centralized logging configuration
 │  ├─ models.py               # Frozen dataclasses (Region, Frame, TextBlock, TranslatedBlock)
@@ -89,12 +98,14 @@ screen-translator/
 │  │  ├─ __init__.py
 │  │  ├─ base.py              # ScreenCapturer (ABC)
 │  │  ├─ mss_capturer.py      # MssCapturer implementation (lazy thread-local)
-│  │  └─ frame_diff.py        # ChangeDetector (downscaled cv2.absdiff)
+│  │  ├─ frame_diff.py        # ChangeDetector (downscaled cv2.absdiff, rolling mode, commit)
+│  │  └─ settle.py            # SettleGate (motion debouncing & max_wait timeout)
 │  ├─ ocr/
 │  │  ├─ __init__.py
 │  │  ├─ base.py              # OcrEngine (ABC)
-│  │  ├─ rapidocr_engine.py   # RapidOcrEngine implementation (lazy ONNX loading)
-│  │  └─ grouping.py          # group_lines() paragraph clustering
+│  │  ├─ rapidocr_engine.py   # RapidOcrEngine implementation with adaptive upscale
+│  │  ├─ grouping.py          # group_lines() paragraph clustering
+│  │  └─ upscale.py           # Adaptive upscale calculations & coordinate remapping
 │  ├─ translate/
 │  │  ├─ __init__.py          # build_translator factory
 │  │  ├─ base.py              # Translator (ABC) & TranslationError
@@ -110,19 +121,23 @@ screen-translator/
 │  └─ utils/
 │     ├─ __init__.py
 │     ├─ coords.py            # Coordinate transformations & monitor overlap resolution
+│     ├─ stabilization.py     # blocks_equivalent() visual jitter stabilizer
 │     └─ win_utils.py         # Win32 DPI awareness, capture exclusion, click-through
 └─ tests/
    ├─ test_config.py          # Configuration loading and schema validation
    ├─ test_imports.py         # Module imports, model invariants, factories
    ├─ test_coords.py          # Coordinate transformation and DPR scaling tests
-   ├─ test_frame_diff.py      # Unit tests for ChangeDetector
+   ├─ test_frame_diff.py      # Unit tests for ChangeDetector (standard, rolling, commit)
+   ├─ test_settle_gate.py     # Unit tests for SettleGate with fake clock
+   ├─ test_blocks_equivalent.py # Unit tests for blocks_equivalent stabilization
+   ├─ test_upscale.py         # Unit tests for adaptive upscale helpers
    ├─ test_grouping.py        # Unit tests for group_lines() clustering
    ├─ test_filters.py         # Unit tests for translation filters
    ├─ test_cache.py           # Unit tests for LRU TranslationCache
    ├─ test_cached_translator.py # Unit tests for CachedTranslator deduplication & caching
    ├─ test_state.py           # Unit tests for AppState persistence & validation
    ├─ test_hotkeys_parse.py   # Unit tests for hotkey syntax validation
-   ├─ test_ocr_integration.py # Integration test for RapidOCR on synthetic image
+   ├─ test_ocr_integration.py # Integration test for RapidOCR (standard & small text)
    └─ test_google_integration.py # Integration test for live GoogleTranslator API
 ```
 
@@ -132,4 +147,6 @@ screen-translator/
 - **Stage 2 [DONE]**: Translation (GoogleTranslator) + thread-safe LRU cache + filters.
 - **Stage 3 [DONE]**: Overlay window (click-through, transparent, excluded from capture).
 - **Stage 4 [DONE]**: Hotkeys, region selector, tray icon, state persistence, single-instance guard.
+- **Stage 5A [DONE]**: Adaptive upscale, motion settle gate, result stabilization, benchmark suite.
+
 

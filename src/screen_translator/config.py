@@ -27,6 +27,8 @@ class CaptureConfig:
     fps: int = 2
     monitor: int = 1
     region: tuple[int, int, int, int] | None = None
+    settle_ms: int = 300
+    max_wait_ms: int = 1500
 
 
 @dataclass(frozen=True)
@@ -44,6 +46,8 @@ class OcrConfig:
     min_confidence: float = 0.6
     merge_lines: bool = True
     max_gap_ratio: float = 0.8
+    upscale: str | float = "auto"
+    small_text_px: int = 14
 
 
 @dataclass(frozen=True)
@@ -109,6 +113,10 @@ def _validate_config(config: AppConfig) -> None:
             raise ConfigError("capture.region must be a 4-tuple [left, top, width, height] or null")
         if c.region[2] <= 0 or c.region[3] <= 0:
             raise ConfigError("capture.region width and height must be positive")
+    if not isinstance(c.settle_ms, int) or c.settle_ms < 0:
+        raise ConfigError(f"capture.settle_ms must be a non-negative integer, got: {c.settle_ms}")
+    if not isinstance(c.max_wait_ms, int) or c.max_wait_ms < 0:
+        raise ConfigError(f"capture.max_wait_ms must be a non-negative integer, got: {c.max_wait_ms}")
 
     cd = config.change_detection
     if not isinstance(cd.threshold, (int, float)) or not (0.0 <= cd.threshold <= 1.0):
@@ -123,6 +131,17 @@ def _validate_config(config: AppConfig) -> None:
         raise ConfigError(f"ocr.merge_lines must be a boolean, got: {o.merge_lines}")
     if not isinstance(o.max_gap_ratio, (int, float)) or o.max_gap_ratio < 0.0:
         raise ConfigError(f"ocr.max_gap_ratio must be a non-negative number, got: {o.max_gap_ratio}")
+
+    valid_upscale = False
+    if isinstance(o.upscale, str) and o.upscale.lower() == "auto":
+        valid_upscale = True
+    elif isinstance(o.upscale, (int, float)) and o.upscale >= 1.0:
+        valid_upscale = True
+    if not valid_upscale:
+        raise ConfigError(f"ocr.upscale must be 'auto' or a number >= 1.0, got: {o.upscale}")
+
+    if not isinstance(o.small_text_px, int) or o.small_text_px <= 0:
+        raise ConfigError(f"ocr.small_text_px must be a positive integer, got: {o.small_text_px}")
 
     t = config.translate
     if t.provider not in {"google"}:
@@ -204,6 +223,8 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             fps=cap_raw.get("fps", 2),
             monitor=cap_raw.get("monitor", 1),
             region=region_tuple,
+            settle_ms=cap_raw.get("settle_ms", 300),
+            max_wait_ms=cap_raw.get("max_wait_ms", 1500),
         ),
         change_detection=ChangeDetectionConfig(**(data.get("change_detection", {}) or {})),
         ocr=OcrConfig(**(data.get("ocr", {}) or {})),

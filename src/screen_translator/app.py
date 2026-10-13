@@ -58,8 +58,17 @@ def create_detector(config: AppConfig) -> ChangeDetector:
 def create_ocr_engine(config: AppConfig) -> OcrEngine:
     """Create configured OcrEngine instance."""
     if config.ocr.engine == "rapidocr":
-        logger.debug("Creating RapidOcrEngine (min_confidence=%.2f)", config.ocr.min_confidence)
-        return RapidOcrEngine(min_confidence=config.ocr.min_confidence)
+        logger.debug(
+            "Creating RapidOcrEngine (min_confidence=%.2f, upscale=%s, small_text_px=%d)",
+            config.ocr.min_confidence,
+            config.ocr.upscale,
+            config.ocr.small_text_px,
+        )
+        return RapidOcrEngine(
+            min_confidence=config.ocr.min_confidence,
+            upscale=config.ocr.upscale,
+            small_text_px=config.ocr.small_text_px,
+        )
     raise ValueError(f"Unknown OCR engine: {config.ocr.engine}")
 
 
@@ -87,6 +96,8 @@ def create_pipeline(
         merge_lines=config.ocr.merge_lines,
         max_gap_ratio=config.ocr.max_gap_ratio,
         translator=translator,
+        settle_ms=config.capture.settle_ms,
+        max_wait_ms=config.capture.max_wait_ms,
     )
 
 

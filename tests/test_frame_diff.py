@@ -81,3 +81,41 @@ def test_frame_diff_resolution_change() -> None:
 
     img_b = np.zeros((300, 200, 3), dtype=np.uint8)
     assert detector.has_changed(img_b) is True
+
+
+def test_frame_diff_rolling_mode() -> None:
+    """Test that rolling mode compares each frame against the immediately preceding tick."""
+    rolling_detector = ChangeDetector(threshold=0.05, rolling=True)
+    frame1 = np.zeros((100, 320, 3), dtype=np.uint8)
+    assert rolling_detector.has_changed(frame1) is True
+
+    # Frame 2 has big change -> moving=True
+    frame2 = frame1.copy()
+    frame2[0:20, :] = 255
+    assert rolling_detector.has_changed(frame2) is True
+
+    # Frame 3 is identical to Frame 2 -> moving=False (even though differs from Frame 1)
+    frame3 = frame2.copy()
+    assert rolling_detector.has_changed(frame3) is False
+
+
+def test_frame_diff_commit() -> None:
+    """Test that commit() sets the frame as baseline reference."""
+    detector = ChangeDetector(threshold=0.05, rolling=False)
+    frame1 = np.zeros((100, 320, 3), dtype=np.uint8)
+    detector.commit(frame1)
+
+    # Frame 1 is now reference, so calling has_changed with frame1 returns False
+    assert detector.has_changed(frame1) is False
+
+    # Changing to frame2 triggers True
+    frame2 = frame1.copy()
+    frame2[0:30, :] = 255
+    assert detector.has_changed(frame2) is True
+
+    # Committing frame3 directly
+    frame3 = frame1.copy()
+    frame3[50:80, :] = 255
+    detector.commit(frame3)
+    assert detector.has_changed(frame3) is False
+

@@ -31,10 +31,12 @@ MODULES_TO_TEST = [
     "screen_translator.capture.base",
     "screen_translator.capture.mss_capturer",
     "screen_translator.capture.frame_diff",
+    "screen_translator.capture.settle",
     "screen_translator.ocr",
     "screen_translator.ocr.base",
     "screen_translator.ocr.rapidocr_engine",
     "screen_translator.ocr.grouping",
+    "screen_translator.ocr.upscale",
     "screen_translator.translate",
     "screen_translator.translate.base",
     "screen_translator.translate.filters",
@@ -46,8 +48,10 @@ MODULES_TO_TEST = [
     "screen_translator.ui.tray",
     "screen_translator.ui.hotkeys",
     "screen_translator.state",
+    "screen_translator.benchmark",
     "screen_translator.utils",
     "screen_translator.utils.coords",
+    "screen_translator.utils.stabilization",
     "screen_translator.utils.win_utils",
 ]
 

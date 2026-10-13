@@ -24,11 +24,15 @@ def test_default_config_loading() -> None:
     assert isinstance(config, AppConfig)
     assert config.capture.fps == 2
     assert config.capture.monitor == 1
+    assert config.capture.settle_ms == 300
+    assert config.capture.max_wait_ms == 1500
     assert config.change_detection.threshold == 0.02
     assert config.ocr.engine == "rapidocr"
     assert config.ocr.min_confidence == 0.6
     assert config.ocr.merge_lines is True
     assert config.ocr.max_gap_ratio == 0.8
+    assert config.ocr.upscale == "auto"
+    assert config.ocr.small_text_px == 14
     assert config.translate.provider == "google"
     assert config.translate.source_lang == "en"
     assert config.translate.target_lang == "vi"
@@ -138,3 +142,32 @@ def test_nonexistent_file_raises() -> None:
     """Test that specifying a missing file path raises ConfigError."""
     with pytest.raises(ConfigError, match="Configuration file not found"):
         load_config("nonexistent_path_to_config.yaml")
+
+
+def test_invalid_settle_ms_raises() -> None:
+    """Test that negative settle_ms raises ConfigError."""
+    yaml_content = "capture: {settle_ms: -10}\n"
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, suffix=".yaml") as f:
+        f.write(yaml_content)
+        temp_path = f.name
+
+    try:
+        with pytest.raises(ConfigError, match="capture.settle_ms"):
+            load_config(temp_path)
+    finally:
+        Path(temp_path).unlink(missing_ok=True)
+
+
+def test_invalid_upscale_raises() -> None:
+    """Test that invalid upscale string raises ConfigError."""
+    yaml_content = "ocr: {upscale: 'invalid_mode'}\n"
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, suffix=".yaml") as f:
+        f.write(yaml_content)
+        temp_path = f.name
+
+    try:
+        with pytest.raises(ConfigError, match="ocr.upscale"):
+            load_config(temp_path)
+    finally:
+        Path(temp_path).unlink(missing_ok=True)
+

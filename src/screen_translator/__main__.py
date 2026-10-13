@@ -29,9 +29,11 @@ MODULES_TO_VERIFY: list[str] = [
     "screen_translator.capture.base",
     "screen_translator.capture.mss_capturer",
     "screen_translator.capture.frame_diff",
+    "screen_translator.capture.settle",
     "screen_translator.ocr.base",
     "screen_translator.ocr.rapidocr_engine",
     "screen_translator.ocr.grouping",
+    "screen_translator.ocr.upscale",
     "screen_translator.translate.base",
     "screen_translator.translate.filters",
     "screen_translator.translate.google_translator",
@@ -41,7 +43,9 @@ MODULES_TO_VERIFY: list[str] = [
     "screen_translator.ui.tray",
     "screen_translator.ui.hotkeys",
     "screen_translator.state",
+    "screen_translator.benchmark",
     "screen_translator.utils.coords",
+    "screen_translator.utils.stabilization",
     "screen_translator.utils.win_utils",
 ]
 
@@ -217,6 +221,17 @@ def main() -> int:
         help="Directory to save raw and annotated frames.",
     )
     parser.add_argument(
+        "--bench",
+        action="store_true",
+        help="Run performance benchmark measuring pipeline latencies and CPU load.",
+    )
+    parser.add_argument(
+        "--frames",
+        type=int,
+        default=20,
+        help="Number of frames to benchmark (default: 20).",
+    )
+    parser.add_argument(
         "--log-level",
         type=str,
         default=None,
@@ -228,6 +243,10 @@ def main() -> int:
 
     if args.check:
         return run_check()
+
+    if args.bench:
+        from screen_translator.benchmark import run_bench
+        return run_bench(args)
 
     if args.console or args.once:
         return run_console(args)

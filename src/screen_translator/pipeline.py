@@ -11,10 +11,12 @@ from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 from screen_translator.capture.base import ScreenCapturer
 from screen_translator.capture.frame_diff import ChangeDetector
+from screen_translator.capture.settle import SettleGate
 from screen_translator.models import Frame, Region, TextBlock, TranslatedBlock
 from screen_translator.ocr.base import OcrEngine
 from screen_translator.ocr.grouping import group_lines
 from screen_translator.translate.base import TranslationError, Translator
+from screen_translator.utils.stabilization import blocks_equivalent
 
 logger = logging.getLogger(__name__)
 
@@ -33,16 +35,24 @@ class Pipeline:
         merge_lines: bool = True,
         max_gap_ratio: float = 0.8,
         translator: Translator | None = None,
+        settle_ms: int = 300,
+        max_wait_ms: int = 1500,
+        motion_detector: ChangeDetector | None = None,
+        settle_gate: SettleGate | None = None,
     ) -> None:
         """Initialize pipeline with engine components.
 
         Args:
             capturer: ScreenCapturer implementation.
-            detector: ChangeDetector implementation.
+            detector: ChangeDetector implementation (baseline frame diff).
             ocr_engine: OcrEngine implementation.
             merge_lines: Whether to group vertically adjacent lines into paragraphs.
             max_gap_ratio: Maximum line spacing multiplier allowed between adjacent lines.
             translator: Optional Translator implementation (Stage 2).
+            settle_ms: Stillness duration (ms) before running OCR on changed screen.
+            max_wait_ms: Maximum duration (ms) to debounce continuous screen motion.
+            motion_detector: Optional ChangeDetector in rolling mode.
+            settle_gate: Optional SettleGate instance.
         """
         self.capturer = capturer
         self.detector = detector
@@ -50,9 +60,26 @@ class Pipeline:
         self.merge_lines = merge_lines
         self.max_gap_ratio = max_gap_ratio
         self.translator = translator
+
+        self.motion_detector = motion_detector or ChangeDetector(
+            threshold=detector.threshold, rolling=True
+        )
+        self.settle_gate = settle_gate or SettleGate(
+            settle_ms=settle_ms, max_wait_ms=max_wait_ms
+        )
+
         self.last_frame: Frame | None = None
         self.last_ocr_time: float = 0.0
         self.last_translate_time: float = 0.0
+        self._last_emitted_blocks: list[TranslatedBlock] | list[TextBlock] | None = None
+
+    def reset(self) -> None:
+        """Reset change detector baseline, motion history, settle gate, and stabilization cache."""
+        self.detector.reset()
+        self.motion_detector.reset()
+        self.settle_gate.reset()
+        self._last_emitted_blocks = None
+        logger.debug("Pipeline state completely reset")
 
     def step(
         self,
@@ -63,7 +90,7 @@ class Pipeline:
         Returns:
             list[TranslatedBlock] | None when translator is configured.
             list[TextBlock] | None when running without translator (Stage 1 mode).
-            None if frame has not changed or if translation encounters a retryable error.
+            None if frame has not changed, screen has not settled, or error occurred.
         """
         t0 = time.monotonic()
         frame = self.capturer.grab(region)
@@ -72,11 +99,16 @@ class Pipeline:
 
         t1 = time.monotonic()
         changed = self.detector.has_changed(frame.image)
+        moving = self.motion_detector.has_changed(frame.image)
         t_diff = time.monotonic() - t1
 
-        if not changed:
-            logger.debug("no change (capture=%.3fs, diff=%.3fs)", t_cap, t_diff)
+        ready = self.settle_gate.observe(changed=changed, moving=moving)
+        if not ready:
+            logger.debug("Settle gate waiting (changed=%s, moving=%s)", changed, moving)
             return None
+
+        # Screen settled: commit baseline reference to current frame
+        self.detector.commit(frame.image)
 
         t2 = time.monotonic()
         offset = (frame.region.left, frame.region.top)
@@ -97,11 +129,21 @@ class Pipeline:
                 self.last_ocr_time,
                 len(blocks),
             )
+            if self._last_emitted_blocks is not None and blocks_equivalent(
+                self._last_emitted_blocks, blocks, tol_px=4
+            ):
+                logger.debug("Result stabilized (equivalent to last emitted blocks, skipping emission)")
+                return None
+
+            self._last_emitted_blocks = blocks
             return blocks
 
         # Stage 2 mode: Translate detected text blocks
         if not blocks:
             self.last_translate_time = 0.0
+            if self._last_emitted_blocks == []:
+                return None
+            self._last_emitted_blocks = []
             return []
 
         t3 = time.monotonic()
@@ -123,13 +165,22 @@ class Pipeline:
                 self.last_translate_time,
                 len(translated_blocks),
             )
+
+            # Result stabilization to eliminate micro-jitter and flicker
+            if self._last_emitted_blocks is not None and blocks_equivalent(
+                self._last_emitted_blocks, translated_blocks, tol_px=4
+            ):
+                logger.debug("Result stabilized (equivalent to last emitted blocks, skipping emission)")
+                return None
+
+            self._last_emitted_blocks = translated_blocks
             return translated_blocks
         except TranslationError as exc:
             logger.warning(
                 "Translation failed: %s. Resetting detector baseline and waiting 2s backoff.",
                 exc,
             )
-            self.detector.reset()
+            self.reset()
             time.sleep(2.0)
             return None
 
@@ -176,10 +227,7 @@ class PipelineWorker(QObject):
         region: Region | None = None,
         parent: QObject | None = None,
     ) -> None:
-        """Initialize PipelineWorker wrapping Pipeline.
-
-        Accepts either an assembled Pipeline instance or individual components.
-        """
+        """Initialize PipelineWorker wrapping Pipeline."""
         super().__init__(parent)
         if pipeline is not None:
             self.pipeline = pipeline
@@ -253,4 +301,4 @@ class PipelineWorker(QObject):
         """Update capture region and reset detector baseline."""
         logger.debug("PipelineWorker region updated: %s", region)
         self.region = region
-        self.pipeline.detector.reset()
+        self.pipeline.reset()

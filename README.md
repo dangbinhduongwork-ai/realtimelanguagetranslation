@@ -142,8 +142,9 @@ screen-translator/
 ├─ config.yaml                # Application configuration
 ├─ src/screen_translator/
 │  ├─ __init__.py
-│  ├─ __main__.py             # Entry point supporting --check and --console
+│  ├─ __main__.py             # Entry point supporting --check, --console, and --bench
 │  ├─ app.py                  # Component factory functions, WorkerBridge & wiring
+│  ├─ benchmark.py            # Latency and CPU benchmarking suite
 │  ├─ config.py               # Loads & validates config.yaml into dataclasses
 │  ├─ logging_setup.py        # Centralized logging configuration
 │  ├─ models.py               # Frozen dataclasses (Region, Frame, TextBlock, TranslatedBlock)
@@ -153,12 +154,14 @@ screen-translator/
 │  │  ├─ __init__.py
 │  │  ├─ base.py              # ScreenCapturer (ABC)
 │  │  ├─ mss_capturer.py      # MssCapturer implementation (lazy thread-local)
-│  │  └─ frame_diff.py        # ChangeDetector (downscaled cv2.absdiff)
+│  │  ├─ frame_diff.py        # ChangeDetector (downscaled cv2.absdiff, rolling mode, commit)
+│  │  └─ settle.py            # SettleGate (motion debouncing & max_wait timeout)
 │  ├─ ocr/
 │  │  ├─ __init__.py
 │  │  ├─ base.py              # OcrEngine (ABC)
-│  │  ├─ rapidocr_engine.py   # RapidOcrEngine implementation (lazy ONNX loading)
-│  │  └─ grouping.py          # group_lines() paragraph clustering
+│  │  ├─ rapidocr_engine.py   # RapidOcrEngine implementation with adaptive upscale
+│  │  ├─ grouping.py          # group_lines() paragraph clustering
+│  │  └─ upscale.py           # Adaptive upscale calculations & coordinate remapping
 │  ├─ translate/
 │  │  ├─ __init__.py          # build_translator factory
 │  │  ├─ base.py              # Translator (ABC) & TranslationError
@@ -174,19 +177,23 @@ screen-translator/
 │  └─ utils/
 │     ├─ __init__.py
 │     ├─ coords.py            # Coordinate transformations & monitor overlap resolution
+│     ├─ stabilization.py     # blocks_equivalent() visual jitter stabilizer
 │     └─ win_utils.py         # Win32 DPI awareness, capture exclusion, click-through
 └─ tests/
    ├─ test_config.py          # Configuration loading and schema validation
    ├─ test_imports.py         # Module imports, model invariants, factories
    ├─ test_coords.py          # Coordinate transformation and DPR scaling tests
-   ├─ test_frame_diff.py      # Unit tests for ChangeDetector
+   ├─ test_frame_diff.py      # Unit tests for ChangeDetector (standard, rolling, commit)
+   ├─ test_settle_gate.py     # Unit tests for SettleGate with fake clock
+   ├─ test_blocks_equivalent.py # Unit tests for blocks_equivalent stabilization
+   ├─ test_upscale.py         # Unit tests for adaptive upscale helpers
    ├─ test_grouping.py        # Unit tests for group_lines() clustering
    ├─ test_filters.py         # Unit tests for translation filters
    ├─ test_cache.py           # Unit tests for LRU TranslationCache
    ├─ test_cached_translator.py # Unit tests for CachedTranslator deduplication & caching
    ├─ test_state.py           # Unit tests for AppState persistence & validation
    ├─ test_hotkeys_parse.py   # Unit tests for hotkey syntax validation
-   ├─ test_ocr_integration.py # Integration test for RapidOCR on synthetic image
+   ├─ test_ocr_integration.py # Integration test for RapidOCR (standard & small text)
    └─ test_google_integration.py # Integration test for live GoogleTranslator API
 ```
 
@@ -232,6 +239,59 @@ python -m screen_translator
 
 ---
 
+## Performance Tuning (Stage 5A)
+
+### 1. Motion Debouncing (`capture.settle_ms` & `capture.max_wait_ms`)
+During continuous mouse scrolling or slide deck transitions, running OCR on every frame wastes computing power and reads half-rendered text.
+- **`capture.settle_ms`** (default: `300` ms): The pipeline waits for screen motion to stop for this duration before triggering OCR. Set to `0` to disable debouncing.
+- **`capture.max_wait_ms`** (default: `1500` ms): An upper bound timeout that guarantees periodic OCR updates even during persistent animations (e.g., video or continuous tickers).
+- **Reference commit**: Once a frame triggers OCR, `detector.commit(frame)` locks that image as the new baseline, preventing spurious secondary triggers immediately following motion.
+
+### 2. Adaptive Small-Text Upscale (`ocr.upscale` & `ocr.small_text_px`)
+- **`ocr.upscale`** (default: `"auto"`): When set to `"auto"`, the engine inspects the median text height in unscaled screen coordinates. If the median line height is below `ocr.small_text_px` (default: `14` px), it automatically re-runs OCR on a 2x bicubic upscaled frame and retains the result if detection count or mean confidence improves. It re-probes 1.0x every 20 frames to avoid permanent upscale overhead when viewing standard-sized text. You can also specify fixed numeric multipliers (`1.0`, `1.5`, `2.0`).
+- **Screen Coordinate Remapping**: Regardless of upscale factor, all bounding boxes are automatically scaled back and offset to physical screen pixels.
+
+### 3. Result Stabilization & Flicker Prevention
+- **`blocks_equivalent(tol_px=4)`**: Text and bounding box coordinates are compared against the last emitted blocks. If detected text is identical and bounding boxes have jittered by less than 4 pixels, the pipeline suppresses re-emission, eliminating overlay flicker and redundant widget repainting on static screens.
+
+### 4. Benchmarking Mode (`--bench`)
+Run the built-in benchmark to measure component latency and CPU utilization across N frames:
+
+```powershell
+$env:PYTHONPATH="src"
+python -m screen_translator --bench --frames 20
+```
+
+To benchmark without network translation:
+```powershell
+$env:PYTHONPATH="src"
+python -m screen_translator --bench --frames 20 --no-translate
+```
+
+**Example Benchmark Output:**
+```text
+====================================================================
+                SCREEN TRANSLATOR PERFORMANCE BENCHMARK
+====================================================================
+  Frames measured    : 20
+  Active upscale     : 1.0x (config: auto)
+  Translation        : Enabled (Google)
+  Approx CPU usage   : 8.4%
+--------------------------------------------------------------------
+  Pipeline Stage          Mean (ms)    p95 (ms)    Min (ms)    Max (ms)
+--------------------------------------------------------------------
+  Capture (MSS)               12.30       15.10        9.80       16.40
+  Diff (cv2.absdiff)           1.40        2.10        1.10        2.40
+  OCR (RapidOCR)              85.20      102.50       78.10      110.30
+  Grouping                     0.30        0.50        0.20        0.60
+  Translate (Google/LRU)       0.15        0.30        0.10        0.40
+--------------------------------------------------------------------
+  Total Pipeline              99.35      120.50       89.30      130.10
+====================================================================
+```
+
+---
+
 ## Troubleshooting
 
 - **"Another instance of Screen Translator is already running."**: An existing process is active or the previous session did not close. Check Windows Task Manager for `python.exe` or delete `%TEMP%/screen_translator.lock`.
@@ -250,6 +310,8 @@ python -m screen_translator
 5. **Multi-Monitor (if available)**: Select a region on the second monitor -> the overlay automatically shifts to that monitor and aligns coordinates accurately.
 6. **Clean Exit**: Press `Ctrl+Alt+Q` or choose `Quit` from the tray menu -> exits cleanly with no leftover background processes in Task Manager.
 7. **Single-Instance Guard**: Launch a second instance in another terminal -> prints `"Another instance of Screen Translator is already running."` and exits immediately.
+8. **Motion Settle**: Scroll a long webpage -> notice OCR does not spam during scrolling; translates shortly after motion settles.
+9. **No Static Flicker**: Leave the screen static -> overlay remains crisp with 0 repainting/flickering.
 
 ---
 
@@ -260,4 +322,6 @@ python -m screen_translator
 - **Stage 2 [DONE]**: Deep-translator integration (GoogleTranslator) + thread-safe LRU cache + non-translatable text filtering.
 - **Stage 3 [DONE]**: Transparent click-through overlay window with capture exclusion and per-monitor scaling.
 - **Stage 4 [DONE]**: Global hotkeys, drag-to-select region selector, system tray icon, state persistence, single-instance guard.
+- **Stage 5A [DONE]**: Adaptive upscale, motion settle gate, result stabilization, benchmark suite.
+
 
