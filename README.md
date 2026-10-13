@@ -73,9 +73,9 @@ and exit with code `0`.
 
 ---
 
-## Running Stage 1 Console Mode
+## Running Console Mode (Stage 2: OCR + Translation)
 
-Run the screen capture, frame change detection, and RapidOCR pipeline directly in the console:
+Run the real-time screen capture, OCR, and English-to-Vietnamese translation pipeline in the console:
 
 **Continuous loop (~2 FPS):**
 ```powershell
@@ -90,14 +90,25 @@ python -m screen_translator --console --once
 ```
 
 **Options:**
+- `--no-translate`: Run OCR only without translation (Stage 1 behavior).
 - `--monitor N`: Specify monitor index (default: from `config.yaml`, 1 = primary).
 - `--region L,T,W,H`: Crop capture to specific screen rectangle (e.g., `--region 100,100,800,600`).
 - `--debug-dir PATH`: Save raw frames (`frame_NNNN_raw.png`) and annotated frames (`frame_NNNN_ocr.png`) with green bounding boxes.
 - `--log-level LEVEL`: Set log verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`).
 
-Output format:
+**Console Output Format:**
 ```text
-[HH:MM:SS] (left, top, right, bottom) conf=0.95 | Recognized English text paragraph
+[11:30:15] (120, 240, 580, 290)
+  EN: Welcome to our quarterly business review meeting.
+  VI: Chào mừng bạn đến với cuộc họp đánh giá kinh doanh hàng quý của chúng tôi.
+```
+
+On exit (Ctrl+C or completion), cache and latency statistics are printed:
+```text
+--- Session Statistics ---
+Cache stats: 14 hits, 3 misses (82.4% hit rate)
+Average OCR latency: 142.5 ms
+Average Translate latency: 310.2 ms
 ```
 
 ---
@@ -110,7 +121,7 @@ $env:PYTHONPATH="src"
 pytest
 ```
 
-Run integration tests including full RapidOCR inference:
+Run integration tests (requires network access for Google Translator & RapidOCR inference):
 ```powershell
 $env:PYTHONPATH="src"
 pytest -m integration
@@ -136,7 +147,7 @@ screen-translator/
 │  ├─ config.py               # Loads & validates config.yaml into dataclasses
 │  ├─ logging_setup.py        # Centralized logging configuration
 │  ├─ models.py               # Frozen dataclasses (Region, Frame, TextBlock, TranslatedBlock)
-│  ├─ pipeline.py             # Pipeline (capture-diff-OCR loop) + PipelineWorker stub
+│  ├─ pipeline.py             # Pipeline (capture-diff-OCR-translate loop) + PipelineWorker stub
 │  ├─ capture/
 │  │  ├─ __init__.py
 │  │  ├─ base.py              # ScreenCapturer (ABC)
@@ -148,10 +159,11 @@ screen-translator/
 │  │  ├─ rapidocr_engine.py   # RapidOcrEngine implementation (lazy ONNX loading)
 │  │  └─ grouping.py          # group_lines() paragraph clustering
 │  ├─ translate/
-│  │  ├─ __init__.py
-│  │  ├─ base.py              # Translator (ABC)
-│  │  ├─ google_translator.py # Google Translator implementation (Stage 2)
-│  │  └─ cache.py             # TranslationCache + CachedTranslator (Stage 2)
+│  │  ├─ __init__.py          # build_translator factory
+│  │  ├─ base.py              # Translator (ABC) & TranslationError
+│  │  ├─ filters.py           # needs_translation() text filtering
+│  │  ├─ google_translator.py # GoogleTranslator with ThreadPoolExecutor & retries
+│  │  └─ cache.py             # TranslationCache (LRU) + CachedTranslator decorator
 │  ├─ ui/
 │  │  ├─ __init__.py
 │  │  ├─ overlay_window.py    # Transparent click-through overlay (Stage 3)
@@ -166,8 +178,11 @@ screen-translator/
    ├─ test_imports.py         # Module imports, model invariants, factories
    ├─ test_frame_diff.py      # Unit tests for ChangeDetector
    ├─ test_grouping.py        # Unit tests for group_lines() clustering
+   ├─ test_filters.py         # Unit tests for translation filters
+   ├─ test_cache.py           # Unit tests for LRU TranslationCache
+   ├─ test_cached_translator.py # Unit tests for CachedTranslator deduplication & caching
    ├─ test_ocr_integration.py # Integration test for RapidOCR on synthetic image
-   └─ test_cache.py           # Placeholder (Stage 2)
+   └─ test_google_integration.py # Integration test for live GoogleTranslator API
 ```
 
 ---
@@ -175,7 +190,7 @@ screen-translator/
 ## Development Roadmap
 
 - **Stage 0 [DONE]**: Project scaffold, interfaces, configurations, models, Windows ctypes helpers, and test suite.
-- **Stage 1 [DONE]**: Screen capture (MSS) + change detection (cv2.absdiff) + OCR (RapidOCR) + line grouping to paragraphs with console output (`--console`).
-- **Stage 2**: Deep-translator integration + translation caching layer.
+- **Stage 1 [DONE]**: Screen capture (MSS) + change detection (cv2.absdiff) + OCR (RapidOCR) + line grouping to paragraphs.
+- **Stage 2 [DONE]**: Deep-translator integration (GoogleTranslator) + thread-safe LRU cache + non-translatable text filtering.
 - **Stage 3**: Transparent click-through overlay window with capture exclusion.
 - **Stage 4**: Global hotkeys, interactive region selector, system tray icon, and performance tuning.

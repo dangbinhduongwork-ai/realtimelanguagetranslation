@@ -15,7 +15,7 @@ import cv2
 from screen_translator.app import create_pipeline
 from screen_translator.config import load_config
 from screen_translator.logging_setup import setup_logging
-from screen_translator.models import Region, TextBlock
+from screen_translator.models import Region, TextBlock, TranslatedBlock
 from screen_translator.utils.win_utils import enable_dpi_awareness
 
 logger = logging.getLogger("screen_translator")
@@ -33,6 +33,7 @@ MODULES_TO_VERIFY: list[str] = [
     "screen_translator.ocr.rapidocr_engine",
     "screen_translator.ocr.grouping",
     "screen_translator.translate.base",
+    "screen_translator.translate.filters",
     "screen_translator.translate.google_translator",
     "screen_translator.translate.cache",
     "screen_translator.ui.overlay_window",
@@ -67,11 +68,11 @@ def _parse_region(region_str: str | None) -> Region | None:
             raise ValueError
         return Region(left=parts[0], top=parts[1], width=parts[2], height=parts[3])
     except Exception as exc:
-        raise ValueError(f"Invalid --region format: '{region_str}'. Expected 'L,T,W,H' with positive W,H.") from exc
+        raise ValueError(f"Invalid --region format: '{region_str}'. Expected 'L,T,W,H'.") from exc
 
 
 def run_console(args: argparse.Namespace) -> int:
-    """Run console capture and OCR pipeline loop."""
+    """Run console capture, OCR, and translation pipeline loop."""
     config = load_config()
     log_level = args.log_level or config.logging.level
     setup_logging(level=log_level)
@@ -84,23 +85,33 @@ def run_console(args: argparse.Namespace) -> int:
     if debug_path:
         debug_path.mkdir(parents=True, exist_ok=True)
 
-    pipeline = create_pipeline(config, monitor=args.monitor)
-    frame_counter = 0
+    use_translation = not args.no_translate
+    pipeline = create_pipeline(config, monitor=args.monitor, translate=use_translation)
 
-    def handle_result(blocks: list[TextBlock]) -> None:
+    frame_counter = 0
+    ocr_latencies: list[float] = []
+    translate_latencies: list[float] = []
+
+    def handle_result(blocks: list[TranslatedBlock] | list[TextBlock]) -> None:
         nonlocal frame_counter
         frame_counter += 1
+
+        if pipeline.last_ocr_time > 0:
+            ocr_latencies.append(pipeline.last_ocr_time)
+        if pipeline.last_translate_time > 0:
+            translate_latencies.append(pipeline.last_translate_time)
 
         if debug_path and pipeline.last_frame is not None:
             raw_path = debug_path / f"frame_{frame_counter:04d}_raw.png"
             cv2.imwrite(str(raw_path), pipeline.last_frame.image)
 
             annotated = pipeline.last_frame.image.copy()
-            reg_left = pipeline.last_frame.region.left
-            reg_top = pipeline.last_frame.region.top
-            for b in blocks:
-                pt1 = (b.bbox[0] - reg_left, b.bbox[1] - reg_top)
-                pt2 = (b.bbox[2] - reg_left, b.bbox[3] - reg_top)
+            reg_l = pipeline.last_frame.region.left
+            reg_t = pipeline.last_frame.region.top
+            for item in blocks:
+                bbox = item.source.bbox if isinstance(item, TranslatedBlock) else item.bbox
+                pt1 = (bbox[0] - reg_l, bbox[1] - reg_t)
+                pt2 = (bbox[2] - reg_l, bbox[3] - reg_t)
                 cv2.rectangle(annotated, pt1, pt2, (0, 255, 0), 2)
             ann_path = debug_path / f"frame_{frame_counter:04d}_ocr.png"
             cv2.imwrite(str(ann_path), annotated)
@@ -109,30 +120,47 @@ def run_console(args: argparse.Namespace) -> int:
             return
 
         ts_str = datetime.now().strftime("%H:%M:%S")
-        for b in blocks:
-            print(f"[{ts_str}] {b.bbox} conf={b.confidence:.2f} | {b.text}")
+        for item in blocks:
+            if isinstance(item, TranslatedBlock):
+                print(f"[{ts_str}] {item.source.bbox}")
+                print(f"  EN: {item.source.text}")
+                print(f"  VI: {item.translated_text}")
+            else:
+                print(f"[{ts_str}] {item.bbox} conf={item.confidence:.2f} | {item.text}")
         print()
         sys.stdout.flush()
 
-    if args.once:
-        logger.info("Executing single capture pass (--once)...")
-        res = pipeline.step(region=target_region)
-        if res is not None:
-            handle_result(res)
-        pipeline.capturer.close()
-        return 0
-
     stop_event = threading.Event()
     fps = float(config.capture.fps)
-    logger.info("Starting console OCR loop at %.1f FPS (press Ctrl+C to exit)...", fps)
 
     try:
-        pipeline.run(stop_event=stop_event, fps=fps, on_result=handle_result, region=target_region)
+        if args.once:
+            logger.info("Executing single pass (--once)...")
+            res = pipeline.step(region=target_region)
+            if res is not None:
+                handle_result(res)
+        else:
+            logger.info("Starting console loop at %.1f FPS (press Ctrl+C to exit)...", fps)
+            pipeline.run(stop_event=stop_event, fps=fps, on_result=handle_result, region=target_region)
     except KeyboardInterrupt:
         logger.info("Interrupted by user. Exiting cleanly...")
     finally:
         stop_event.set()
         pipeline.capturer.close()
+
+        # Print final session performance and cache statistics
+        print("\n--- Session Statistics ---")
+        if pipeline.translator and hasattr(pipeline.translator, "cache"):
+            hits, misses = pipeline.translator.cache.stats()
+            total = hits + misses
+            rate = (hits / total * 100) if total > 0 else 0.0
+            print(f"Cache stats: {hits} hits, {misses} misses ({rate:.1f}% hit rate)")
+        if ocr_latencies:
+            avg_ocr = (sum(ocr_latencies) / len(ocr_latencies)) * 1000
+            print(f"Average OCR latency: {avg_ocr:.1f} ms")
+        if translate_latencies:
+            avg_tr = (sum(translate_latencies) / len(translate_latencies)) * 1000
+            print(f"Average Translate latency: {avg_tr:.1f} ms")
 
     return 0
 
@@ -156,12 +184,17 @@ def main() -> int:
     parser.add_argument(
         "--console",
         action="store_true",
-        help="Run continuous screen capture, change detection, and OCR printing to the console.",
+        help="Run continuous screen capture, OCR, and translation printing to the console.",
     )
     parser.add_argument(
         "--once",
         action="store_true",
-        help="Perform a single capture and OCR pass and exit.",
+        help="Perform a single capture and translation pass and exit.",
+    )
+    parser.add_argument(
+        "--no-translate",
+        action="store_true",
+        help="Disable translation and print raw OCR text only (Stage 1 mode).",
     )
     parser.add_argument(
         "--monitor",
@@ -179,7 +212,7 @@ def main() -> int:
         "--debug-dir",
         type=str,
         default=None,
-        help="Directory to save raw and annotated frames with OCR bounding boxes.",
+        help="Directory to save raw and annotated frames.",
     )
     parser.add_argument(
         "--log-level",

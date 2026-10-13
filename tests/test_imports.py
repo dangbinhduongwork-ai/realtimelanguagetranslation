@@ -37,6 +37,7 @@ MODULES_TO_TEST = [
     "screen_translator.ocr.grouping",
     "screen_translator.translate",
     "screen_translator.translate.base",
+    "screen_translator.translate.filters",
     "screen_translator.translate.google_translator",
     "screen_translator.translate.cache",
     "screen_translator.ui",
@@ -124,6 +125,7 @@ def test_app_factories() -> None:
         create_detector,
         create_ocr_engine,
         create_pipeline,
+        create_translator,
     )
     from screen_translator.config import load_config
 
@@ -131,9 +133,11 @@ def test_app_factories() -> None:
     capturer = create_capturer(config)
     detector = create_detector(config)
     ocr_engine = create_ocr_engine(config)
+    translator = create_translator(config)
     pipeline = create_pipeline(config)
 
     assert capturer is not None
     assert detector is not None
     assert ocr_engine is not None
+    assert translator is not None
     assert pipeline is not None

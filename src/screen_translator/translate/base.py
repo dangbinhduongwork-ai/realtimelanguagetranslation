@@ -1,8 +1,12 @@
-"""Abstract base class for translation engines."""
+"""Abstract base class and exceptions for translation engines."""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+
+
+class TranslationError(Exception):
+    """Raised when translation request fails or encounters an unrecoverable API error."""
 
 
 class Translator(ABC):
@@ -24,4 +28,7 @@ class Translator(ABC):
 
         Returns:
             list[str]: Translated strings corresponding to input texts in order.
+
+        Raises:
+            TranslationError: If translation fails after retries.
         """

@@ -45,9 +45,16 @@ always-on-top overlay placed over the original text.
 - Component factory functions added to `app.py` (`create_capturer`, `create_detector`, `create_ocr_engine`, `create_pipeline`).
 - `RapidOcrEngine.warmup()` exposed for preloading ONNX models.
 
+## Architecture Additions (Stage 2)
+- `translate/filters.py`: `needs_translation()` skips short symbols, pure numbers, and Vietnamese diacritics.
+- `GoogleTranslator`: Deep-translator runner with concurrent `ThreadPoolExecutor(max_workers=4)`, sentence chunking (>4500 chars), and exponential backoff retry. Raises `TranslationError`.
+- `TranslationCache`: Thread-safe LRU cache with whitespace normalization, stats tracking (`hits`, `misses`), and capacity eviction.
+- `CachedTranslator`: Decorator handling cache queries, batch deduplication, and caching of successful unique requests.
+- `Pipeline`: Optionally receives `translator` to produce `list[TranslatedBlock]`. On `TranslationError`, resets detector, backs off 2s, and returns `None` without crashing.
+
 ## Staging Roadmap
 - **Stage 0 [DONE]**: Scaffold project (folders, files, interfaces, config, tests, skeleton verification).
 - **Stage 1 [DONE]**: Capture (MSS) + change detection (cv2.absdiff) + OCR (RapidOCR) + grouping -> console output.
-- **Stage 2**: Translation + cache.
+- **Stage 2 [DONE]**: Translation (GoogleTranslator) + thread-safe LRU cache + filters.
 - **Stage 3**: Overlay window (click-through, transparent, excluded from capture).
 - **Stage 4**: Hotkeys, region selector, tray icon, performance tuning.
