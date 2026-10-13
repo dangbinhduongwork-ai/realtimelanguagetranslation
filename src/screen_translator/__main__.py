@@ -40,6 +40,7 @@ MODULES_TO_VERIFY: list[str] = [
     "screen_translator.ui.region_selector",
     "screen_translator.ui.tray",
     "screen_translator.ui.hotkeys",
+    "screen_translator.utils.coords",
     "screen_translator.utils.win_utils",
 ]
 
@@ -230,8 +231,10 @@ def main() -> int:
     if args.console or args.once:
         return run_console(args)
 
-    parser.print_help()
-    return 0
+    # Default (no flags): launch transparent GUI overlay window mode
+    from screen_translator.app import run_overlay
+    config = load_config()
+    return run_overlay(config, args)
 
 
 if __name__ == "__main__":

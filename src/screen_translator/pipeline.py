@@ -7,7 +7,7 @@ import logging
 import threading
 import time
 
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 from screen_translator.capture.base import ScreenCapturer
 from screen_translator.capture.frame_diff import ChangeDetector
@@ -158,36 +158,99 @@ class Pipeline:
 
 
 class PipelineWorker(QObject):
-    """Worker QObject responsible for executing the screen processing loop in a QThread.
+    """Worker QObject executing the pipeline loop inside a QThread using a single-shot QTimer."""
 
-    Stub maintained for Stage 3 Qt integration.
-    """
-
-    blocks_ready = Signal(list)
-    status = Signal(str)
-    error = Signal(str)
+    blocks_ready = Signal(object)  # Emits list[TranslatedBlock] or list[TextBlock]
+    status = Signal(str)           # Emits pipeline status messages
+    error = Signal(str)            # Emits error descriptions
 
     def __init__(
         self,
-        capturer: ScreenCapturer,
-        change_detector: ChangeDetector,
-        ocr_engine: OcrEngine,
-        translator: Translator,
-        fps: int = 2,
+        pipeline: Pipeline | None = None,
+        capturer: ScreenCapturer | None = None,
+        change_detector: ChangeDetector | None = None,
+        ocr_engine: OcrEngine | None = None,
+        translator: Translator | None = None,
+        fps: float = 2.0,
         merge_lines: bool = True,
+        region: Region | None = None,
         parent: QObject | None = None,
     ) -> None:
+        """Initialize PipelineWorker wrapping Pipeline.
+
+        Accepts either an assembled Pipeline instance or individual components.
+        """
         super().__init__(parent)
-        raise NotImplementedError("PipelineWorker is scheduled for Stage 3")
+        if pipeline is not None:
+            self.pipeline = pipeline
+        elif capturer is not None and change_detector is not None and ocr_engine is not None:
+            self.pipeline = Pipeline(
+                capturer=capturer,
+                detector=change_detector,
+                ocr_engine=ocr_engine,
+                merge_lines=merge_lines,
+                translator=translator,
+            )
+        else:
+            raise ValueError("PipelineWorker requires either an assembled Pipeline or engine components")
+
+        self.fps = max(0.1, float(fps))
+        self.region = region
+        self._timer: QTimer | None = None
+        self._is_running = False
 
     @Slot()
     def start(self) -> None:
-        raise NotImplementedError("PipelineWorker is scheduled for Stage 3")
+        """Start the continuous pipeline loop via single-shot QTimer inside the worker thread."""
+        if self._is_running:
+            return
+        self._is_running = True
+        self.status.emit("running")
+        logger.info("PipelineWorker started at %.1f FPS", self.fps)
+
+        if self._timer is None:
+            self._timer = QTimer(self)
+            self._timer.setSingleShot(True)
+            self._timer.timeout.connect(self._step_and_schedule)
+
+        self._step_and_schedule()
+
+    def _step_and_schedule(self) -> None:
+        """Execute one pipeline step and schedule the next iteration."""
+        if not self._is_running:
+            return
+
+        t_start = time.monotonic()
+        try:
+            res = self.pipeline.step(region=self.region)
+            if res is not None:
+                self.blocks_ready.emit(res)
+        except Exception as exc:
+            logger.error("Error in PipelineWorker step: %s", exc, exc_info=True)
+            self.error.emit(str(exc))
+
+        if not self._is_running:
+            return
+
+        elapsed_ms = (time.monotonic() - t_start) * 1000.0
+        target_interval_ms = 1000.0 / self.fps
+        remaining_ms = max(0, int(round(target_interval_ms - elapsed_ms)))
+
+        if self._timer is not None:
+            self._timer.start(remaining_ms)
 
     @Slot()
     def stop(self) -> None:
-        raise NotImplementedError("PipelineWorker is scheduled for Stage 3")
+        """Gracefully stop the timer and worker execution."""
+        self._is_running = False
+        if self._timer is not None:
+            self._timer.stop()
+        self.status.emit("stopped")
+        logger.info("PipelineWorker stopped")
 
     @Slot(object)
     def set_region(self, region: Region | None) -> None:
-        raise NotImplementedError("PipelineWorker is scheduled for Stage 3")
+        """Update capture region and reset detector baseline."""
+        logger.debug("PipelineWorker region updated: %s", region)
+        self.region = region
+        self.pipeline.detector.reset()

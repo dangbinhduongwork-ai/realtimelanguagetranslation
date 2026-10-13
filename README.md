@@ -172,10 +172,12 @@ screen-translator/
 │  │  └─ hotkeys.py           # Global hotkeys listener (Stage 4)
 │  └─ utils/
 │     ├─ __init__.py
+│     ├─ coords.py            # Physical native <-> Qt logical coordinate conversions
 │     └─ win_utils.py         # Win32 DPI awareness, capture exclusion, click-through
 └─ tests/
    ├─ test_config.py          # Configuration loading and schema validation
    ├─ test_imports.py         # Module imports, model invariants, factories
+   ├─ test_coords.py          # Coordinate transformation and DPR scaling tests
    ├─ test_frame_diff.py      # Unit tests for ChangeDetector
    ├─ test_grouping.py        # Unit tests for group_lines() clustering
    ├─ test_filters.py         # Unit tests for translation filters
@@ -187,10 +189,46 @@ screen-translator/
 
 ---
 
+## Running the App
+
+### 1. Transparent Overlay Mode (Default, Stage 3)
+Run with no arguments to launch the transparent, click-through overlay window on your primary monitor:
+
+```powershell
+$env:PYTHONPATH="src"
+python -m screen_translator
+```
+*(Press `Ctrl+C` in the terminal to cleanly exit).*
+
+### 2. Console Mode (Stage 1 & 2)
+```powershell
+$env:PYTHONPATH="src"
+python -m screen_translator --console
+```
+
+### Options:
+- `--monitor N`: Target specific monitor index (1 = primary).
+- `--region L,T,W,H`: Crop to rectangular pixel bounding box.
+- `--no-translate`: Run OCR only without translation.
+- `--log-level LEVEL`: Set log verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`).
+
+---
+
+## Manual Test Checklist (Stage 3 Overlay)
+
+1. **Visual Translation**: Open a web page or PDF with English text and run `python -m screen_translator`: Vietnamese appears directly over the text within ~2 s.
+2. **Click-Through**: Click a hyperlink or button underneath the overlay: clicks pass through directly to underlying apps.
+3. **Capture Exclusion**: Take a screenshot with the Windows Snipping Tool: the overlay is NOT captured in the screenshot (`WDA_EXCLUDEFROMCAPTURE`).
+4. **Feedback Loop Prevention**: Leave the screen static for 10 s with `--log-level DEBUG`: logs repeatedly report `"no change"` (verifies OCR does not capture our own overlay).
+5. **DPI Scaling**: Test at Windows display scaling 100%, 125%, and 150%: box positions and font scaling maintain correct alignment.
+6. **Dynamic Refresh**: Scroll the page or change screens: the overlay updates cleanly with no stale or duplicated bounding boxes.
+
+---
+
 ## Development Roadmap
 
 - **Stage 0 [DONE]**: Project scaffold, interfaces, configurations, models, Windows ctypes helpers, and test suite.
 - **Stage 1 [DONE]**: Screen capture (MSS) + change detection (cv2.absdiff) + OCR (RapidOCR) + line grouping to paragraphs.
 - **Stage 2 [DONE]**: Deep-translator integration (GoogleTranslator) + thread-safe LRU cache + non-translatable text filtering.
-- **Stage 3**: Transparent click-through overlay window with capture exclusion.
-- **Stage 4**: Global hotkeys, interactive region selector, system tray icon, and performance tuning.
+- **Stage 3 [DONE]**: Transparent click-through overlay window with capture exclusion and per-monitor scaling.
+- **Stage 4**: Hotkeys, region selector, tray icon, performance tuning.

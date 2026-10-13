@@ -52,9 +52,15 @@ always-on-top overlay placed over the original text.
 - `CachedTranslator`: Decorator handling cache queries, batch deduplication, and caching of successful unique requests.
 - `Pipeline`: Optionally receives `translator` to produce `list[TranslatedBlock]`. On `TranslationError`, resets detector, backs off 2s, and returns `None` without crashing.
 
+## Architecture Additions (Stage 3)
+- `utils/coords.py`: Pure functions `native_to_local()` and `local_to_native()` converting between native physical pixels (mss / OCR) and Qt logical pixels based on screen origin and DPR.
+- `PipelineWorker(QObject)`: QThread worker driving `Pipeline.step()` with a single-shot re-arming `QTimer`, avoiding thread blocks and handling `stop()` and `set_region()` slots immediately.
+- `OverlayWindow(QWidget)`: Transparent always-on-top click-through overlay targeting a single `QScreen`. Calls `win_utils.make_click_through(hwnd)` and `win_utils.exclude_window_from_capture(hwnd)` on `showEvent`. Dynamically scales font down to 9 px or extends box downward to fit translated text.
+- `run_overlay(config, args)` in `app.py`: Glues QApplication, OverlayWindow, and PipelineWorker in a QThread with clean Ctrl+C signal handling.
+
 ## Staging Roadmap
 - **Stage 0 [DONE]**: Scaffold project (folders, files, interfaces, config, tests, skeleton verification).
 - **Stage 1 [DONE]**: Capture (MSS) + change detection (cv2.absdiff) + OCR (RapidOCR) + grouping -> console output.
 - **Stage 2 [DONE]**: Translation (GoogleTranslator) + thread-safe LRU cache + filters.
-- **Stage 3**: Overlay window (click-through, transparent, excluded from capture).
+- **Stage 3 [DONE]**: Overlay window (click-through, transparent, excluded from capture).
 - **Stage 4**: Hotkeys, region selector, tray icon, performance tuning.
