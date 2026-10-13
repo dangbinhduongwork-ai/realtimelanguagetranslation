@@ -1,0 +1,33 @@
+capture:
+  fps: 2
+  monitor: 1
+  region: null
+
+change_detection:
+  threshold: 0.02
+
+ocr:
+  engine: rapidocr
+  min_confidence: 0.6
+  merge_lines: true
+
+translate:
+  provider: google
+  source_lang: en
+  target_lang: vi
+  cache_size: 2000
+
+overlay:
+  opacity: 0.9
+  font_family: "Segoe UI"
+  font_size: 14
+  background_color: "#000000"
+  text_color: "#FFFFFF"
+
+hotkeys:
+  toggle: "<ctrl>+<alt>+t"
+  select_region: "<ctrl>+<alt>+r"
+  quit: "<ctrl>+<alt>+q"
+
+logging:
+  level: INFO
