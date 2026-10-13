@@ -143,11 +143,12 @@ screen-translator/
 ├─ src/screen_translator/
 │  ├─ __init__.py
 │  ├─ __main__.py             # Entry point supporting --check and --console
-│  ├─ app.py                  # Component factory functions & wiring
+│  ├─ app.py                  # Component factory functions, WorkerBridge & wiring
 │  ├─ config.py               # Loads & validates config.yaml into dataclasses
 │  ├─ logging_setup.py        # Centralized logging configuration
 │  ├─ models.py               # Frozen dataclasses (Region, Frame, TextBlock, TranslatedBlock)
-│  ├─ pipeline.py             # Pipeline (capture-diff-OCR-translate loop) + PipelineWorker stub
+│  ├─ pipeline.py             # Pipeline loop + PipelineWorker (QObject in QThread)
+│  ├─ state.py                # AppState persistence to %APPDATA%/ScreenTranslator/state.json
 │  ├─ capture/
 │  │  ├─ __init__.py
 │  │  ├─ base.py              # ScreenCapturer (ABC)
@@ -166,13 +167,13 @@ screen-translator/
 │  │  └─ cache.py             # TranslationCache (LRU) + CachedTranslator decorator
 │  ├─ ui/
 │  │  ├─ __init__.py
-│  │  ├─ overlay_window.py    # Transparent click-through overlay (Stage 3)
-│  │  ├─ region_selector.py   # Interactive screen region selector (Stage 4)
-│  │  ├─ tray.py              # System tray icon and menu (Stage 4)
-│  │  └─ hotkeys.py           # Global hotkeys listener (Stage 4)
+│  │  ├─ overlay_window.py    # Transparent click-through overlay with dashed border
+│  │  ├─ region_selector.py   # Multi-screen interactive drag-to-select region overlay
+│  │  ├─ tray.py              # System tray icon (dynamic QPainter, menu, notifications)
+│  │  └─ hotkeys.py           # GlobalHotkeys listener (pynput in background thread)
 │  └─ utils/
 │     ├─ __init__.py
-│     ├─ coords.py            # Physical native <-> Qt logical coordinate conversions
+│     ├─ coords.py            # Coordinate transformations & monitor overlap resolution
 │     └─ win_utils.py         # Win32 DPI awareness, capture exclusion, click-through
 └─ tests/
    ├─ test_config.py          # Configuration loading and schema validation
@@ -183,45 +184,72 @@ screen-translator/
    ├─ test_filters.py         # Unit tests for translation filters
    ├─ test_cache.py           # Unit tests for LRU TranslationCache
    ├─ test_cached_translator.py # Unit tests for CachedTranslator deduplication & caching
+   ├─ test_state.py           # Unit tests for AppState persistence & validation
+   ├─ test_hotkeys_parse.py   # Unit tests for hotkey syntax validation
    ├─ test_ocr_integration.py # Integration test for RapidOCR on synthetic image
    └─ test_google_integration.py # Integration test for live GoogleTranslator API
 ```
 
 ---
 
-## Running the App
+## Running the Complete App (Stage 4)
 
-### 1. Transparent Overlay Mode (Default, Stage 3)
-Run with no arguments to launch the transparent, click-through overlay window on your primary monitor:
+Launch the complete application with system tray, global hotkeys, drag-to-select region selector, and transparent overlay:
 
 ```powershell
 $env:PYTHONPATH="src"
 python -m screen_translator
 ```
-*(Press `Ctrl+C` in the terminal to cleanly exit).*
 
-### 2. Console Mode (Stage 1 & 2)
-```powershell
-$env:PYTHONPATH="src"
-python -m screen_translator --console
-```
+### Global Hotkeys
 
-### Options:
-- `--monitor N`: Target specific monitor index (1 = primary).
-- `--region L,T,W,H`: Crop to rectangular pixel bounding box.
-- `--no-translate`: Run OCR only without translation.
-- `--log-level LEVEL`: Set log verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`).
+| Hotkey | Action | Description |
+|---|---|---|
+| `Ctrl+Alt+T` | Toggle Start / Pause | Pauses background OCR/translation (CPU drops to ~0%) and hides overlay. Press again to resume. |
+| `Ctrl+Alt+R` | Select Region | Dims all monitors; drag a rectangle with crosshairs to capture only that area. |
+| `Ctrl+Alt+Q` | Quit Application | Safely stops background threads, removes tray icon, releases locks, and exits. |
+| `Esc` / Right-click | Cancel Selection | Cancels active region selection with no changes to current settings. |
+
+*(Shortcut key combinations can be customized in `config.yaml` under `hotkeys`)*
+
+### System Tray & Context Menu
+
+- **Tray Icon**: Rendered programmatically (green rounded square with letter **T** while running, gray when paused).
+- **Left-Click**: Toggles between Start and Pause.
+- **Tooltip**: Displays current status (`Running` / `Paused`) and active region coordinates (`W x H @ (X, Y)`).
+- **Context Menu**:
+  - `Pause (Ctrl+Alt+T)` / `Start (Ctrl+Alt+T)`
+  - `Select region... (Ctrl+Alt+R)`
+  - `Full screen`: Resets capture to full primary monitor.
+  - `Quit (Ctrl+Alt+Q)`: Clean shutdown.
+- **Throttled Notifications**: Pipeline errors display balloon warnings throttled to at most 1 message per 30 seconds.
+
+### State Persistence & Single-Instance
+
+- **Persistent Settings**: The last chosen capture region and running state are automatically saved to `%APPDATA%/ScreenTranslator/state.json`. On restart, the saved region is restored only if it still intersects a connected monitor.
+- **Single Instance Guard**: Uses `QLockFile` in the system temporary directory. Launching a second instance prints `Another instance of Screen Translator is already running.` and exits immediately.
+- **Active Region Border**: When a custom region is active, a subtle dashed border (`overlay.show_region_border: true`) marks the bounding box.
 
 ---
 
-## Manual Test Checklist (Stage 3 Overlay)
+## Troubleshooting
 
-1. **Visual Translation**: Open a web page or PDF with English text and run `python -m screen_translator`: Vietnamese appears directly over the text within ~2 s.
-2. **Click-Through**: Click a hyperlink or button underneath the overlay: clicks pass through directly to underlying apps.
-3. **Capture Exclusion**: Take a screenshot with the Windows Snipping Tool: the overlay is NOT captured in the screenshot (`WDA_EXCLUDEFROMCAPTURE`).
-4. **Feedback Loop Prevention**: Leave the screen static for 10 s with `--log-level DEBUG`: logs repeatedly report `"no change"` (verifies OCR does not capture our own overlay).
-5. **DPI Scaling**: Test at Windows display scaling 100%, 125%, and 150%: box positions and font scaling maintain correct alignment.
-6. **Dynamic Refresh**: Scroll the page or change screens: the overlay updates cleanly with no stale or duplicated bounding boxes.
+- **"Another instance of Screen Translator is already running."**: An existing process is active or the previous session did not close. Check Windows Task Manager for `python.exe` or delete `%TEMP%/screen_translator.lock`.
+- **Global hotkey not responding**: Ensure no other application (e.g. graphics driver utilities) has registered an exclusive system hook on `Ctrl+Alt+T` / `Ctrl+Alt+R`. Custom hotkeys can be assigned in `config.yaml`.
+- **Overlay alignment on multi-monitor setups**: When dragging a region onto a secondary monitor, the overlay automatically identifies the screen with the largest overlap and aligns using native physical device pixel ratios.
+- **High CPU usage when idle**: When paused via `Ctrl+Alt+T` or tray icon, the single-shot pipeline timer stops completely, reducing CPU consumption to near 0%.
+
+---
+
+## Manual Test Checklist
+
+1. **Start the app**: The system tray icon appears (green 'T'). Press `Ctrl+Alt+T` -> pauses (overlay disappears, tray turns gray). Press again -> resumes.
+2. **Select Region (`Ctrl+Alt+R`)**: Screen dims across all connected monitors. Drag a rectangle -> only that area is translated, and a dashed border is visible around the active region.
+3. **Cancel Selection**: Press `Ctrl+Alt+R`, then press `Esc` or right-click -> dims disappear, pipeline resumes previous state with no change.
+4. **State Persistence**: Restart the app -> the previously selected region and running state are restored from `%APPDATA%/ScreenTranslator/state.json`.
+5. **Multi-Monitor (if available)**: Select a region on the second monitor -> the overlay automatically shifts to that monitor and aligns coordinates accurately.
+6. **Clean Exit**: Press `Ctrl+Alt+Q` or choose `Quit` from the tray menu -> exits cleanly with no leftover background processes in Task Manager.
+7. **Single-Instance Guard**: Launch a second instance in another terminal -> prints `"Another instance of Screen Translator is already running."` and exits immediately.
 
 ---
 
@@ -231,4 +259,5 @@ python -m screen_translator --console
 - **Stage 1 [DONE]**: Screen capture (MSS) + change detection (cv2.absdiff) + OCR (RapidOCR) + line grouping to paragraphs.
 - **Stage 2 [DONE]**: Deep-translator integration (GoogleTranslator) + thread-safe LRU cache + non-translatable text filtering.
 - **Stage 3 [DONE]**: Transparent click-through overlay window with capture exclusion and per-monitor scaling.
-- **Stage 4**: Hotkeys, region selector, tray icon, performance tuning.
+- **Stage 4 [DONE]**: Global hotkeys, drag-to-select region selector, system tray icon, state persistence, single-instance guard.
+

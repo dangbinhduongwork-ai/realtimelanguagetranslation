@@ -24,6 +24,7 @@ overlay:
   font_size: 14
   background_color: "#000000"
   text_color: "#FFFFFF"
+  show_region_border: true
 
 hotkeys:
   toggle: "<ctrl>+<alt>+t"

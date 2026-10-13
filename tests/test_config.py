@@ -38,6 +38,7 @@ def test_default_config_loading() -> None:
     assert config.overlay.font_size == 14
     assert config.overlay.background_color == "#000000"
     assert config.overlay.text_color == "#FFFFFF"
+    assert config.overlay.show_region_border is True
     assert config.hotkeys.toggle == "<ctrl>+<alt>+t"
     assert config.logging.level == "INFO"
 

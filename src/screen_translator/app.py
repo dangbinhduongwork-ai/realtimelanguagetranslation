@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 import logging
+from pathlib import Path
 import signal
 import sys
+import tempfile
 
-from PySide6.QtCore import QThread, QTimer, Qt
+from PySide6.QtCore import QLockFile, QObject, QThread, QTimer, Qt, Signal
 from PySide6.QtWidgets import QApplication
 
 from screen_translator.capture.base import ScreenCapturer
@@ -19,12 +21,25 @@ from screen_translator.models import Region
 from screen_translator.ocr.base import OcrEngine
 from screen_translator.ocr.rapidocr_engine import RapidOcrEngine
 from screen_translator.pipeline import Pipeline, PipelineWorker
+from screen_translator.state import AppState, is_region_within_monitors, load_state, save_state
 from screen_translator.translate import build_translator
 from screen_translator.translate.base import Translator
+from screen_translator.ui.hotkeys import GlobalHotkeys
 from screen_translator.ui.overlay_window import OverlayWindow
+from screen_translator.ui.region_selector import RegionSelector
+from screen_translator.ui.tray import TrayIcon
+from screen_translator.utils.coords import find_screen_with_largest_overlap
 from screen_translator.utils.win_utils import enable_dpi_awareness
 
 logger = logging.getLogger(__name__)
+
+
+class WorkerBridge(QObject):
+    """Bridge for safely dispatching control signals from main thread to PipelineWorker."""
+
+    start_worker = Signal()
+    stop_worker = Signal()
+    set_region = Signal(object)
 
 
 def create_capturer(config: AppConfig, monitor: int | None = None) -> ScreenCapturer:
@@ -59,16 +74,7 @@ def create_pipeline(
     monitor: int | None = None,
     translate: bool = True,
 ) -> Pipeline:
-    """Create complete Pipeline instance from application configuration.
-
-    Args:
-        config: Application configuration.
-        monitor: Optional monitor index override.
-        translate: Whether to attach translation provider (default True).
-
-    Returns:
-        Pipeline: Assembled pipeline instance.
-    """
+    """Create complete Pipeline instance from application configuration."""
     capturer = create_capturer(config, monitor=monitor)
     detector = create_detector(config)
     ocr_engine = create_ocr_engine(config)
@@ -85,8 +91,15 @@ def create_pipeline(
 
 
 def run_overlay(config: AppConfig, args: argparse.Namespace) -> int:
-    """Launch full Stage 3 transparent click-through overlay GUI application."""
+    """Launch full Stage 4 transparent click-through overlay GUI application."""
     enable_dpi_awareness()
+
+    lock_path = Path(tempfile.gettempdir()) / "screen_translator.lock"
+    lock_file = QLockFile(str(lock_path))
+    if not lock_file.tryLock(100):
+        print("Another instance of Screen Translator is already running.")
+        logger.warning("Another instance of Screen Translator is already running.")
+        return 0
 
     app = QApplication.instance()
     if app is None:
@@ -95,64 +108,206 @@ def run_overlay(config: AppConfig, args: argparse.Namespace) -> int:
     log_level = getattr(args, "log_level", None) or config.logging.level
     setup_logging(level=log_level)
 
-    # 1. Target screen selection
-    mon_idx = getattr(args, "monitor", None) if getattr(args, "monitor", None) is not None else config.capture.monitor
+    # 1. State resolution and connected monitors inspection
     screens = app.screens()
-    target_screen = screens[mon_idx - 1] if (1 <= mon_idx <= len(screens)) else app.primaryScreen()
+    saved_state = load_state()
+    is_running = saved_state.is_running
+    target_region: Region | None = None
 
-    # 2. Pipeline assembly
+    if getattr(args, "region", None):
+        parts = [int(p.strip()) for p in args.region.split(",")]
+        target_region = Region(*parts)
+    elif saved_state.region is not None:
+        mon_geoms = [
+            (
+                int(round(s.geometry().x() * s.devicePixelRatio())),
+                int(round(s.geometry().y() * s.devicePixelRatio())),
+                int(round(s.geometry().width() * s.devicePixelRatio())),
+                int(round(s.geometry().height() * s.devicePixelRatio())),
+            )
+            for s in screens
+        ]
+        if is_region_within_monitors(saved_state.region, mon_geoms):
+            target_region = Region(*saved_state.region)
+        elif config.capture.region:
+            target_region = Region(*config.capture.region)
+    elif config.capture.region:
+        target_region = Region(*config.capture.region)
+
+    # 2. Target screen resolution
+    if target_region is not None:
+        target_screen = find_screen_with_largest_overlap(screens, target_region) or app.primaryScreen()
+    else:
+        mon_idx = getattr(args, "monitor", None) or config.capture.monitor
+        target_screen = screens[mon_idx - 1] if (1 <= mon_idx <= len(screens)) else app.primaryScreen()
+
+    # 3. Pipeline & Worker assembly
     use_translation = not getattr(args, "no_translate", False)
-    pipeline = create_pipeline(config, monitor=args.monitor, translate=use_translation)
+    pipeline = create_pipeline(config, monitor=getattr(args, "monitor", None), translate=use_translation)
 
-    # 3. Overlay Window setup
+    thread = QThread()
+    worker = PipelineWorker(pipeline=pipeline, fps=config.capture.fps, region=target_region)
+    worker.moveToThread(thread)
+
+    bridge = WorkerBridge()
+    bridge.start_worker.connect(worker.start, Qt.QueuedConnection)
+    bridge.stop_worker.connect(worker.stop, Qt.QueuedConnection)
+    bridge.set_region.connect(worker.set_region, Qt.QueuedConnection)
+
+    # 4. Overlay Window setup
     overlay = OverlayWindow(
         font_family=config.overlay.font_family,
         font_size=config.overlay.font_size,
         opacity=config.overlay.opacity,
         background_color=config.overlay.background_color,
         text_color=config.overlay.text_color,
+        show_region_border=config.overlay.show_region_border,
     )
     overlay.set_target_screen(target_screen)
-    overlay.show()
+    if target_region is not None:
+        overlay.set_active_region(target_region)
 
-    # 4. Region resolution
-    target_region: Region | None = None
-    if getattr(args, "region", None):
-        parts = [int(p.strip()) for p in args.region.split(",")]
-        target_region = Region(*parts)
-    elif config.capture.region:
-        target_region = Region(*config.capture.region)
-
-    # 5. QThread + PipelineWorker
-    thread = QThread()
-    worker = PipelineWorker(
-        pipeline=pipeline,
-        fps=config.capture.fps,
-        region=target_region,
-    )
-    worker.moveToThread(thread)
-
-    thread.started.connect(worker.start)
     worker.blocks_ready.connect(overlay.update_blocks, Qt.QueuedConnection)
 
-    # 6. Clean shutdown wiring
+    # 5. Hotkeys, Tray Icon, and Region Selector
+    hk_cfg = config.hotkeys
+    toggle_hint = hk_cfg.toggle.replace("<", "").replace(">", "").upper()
+    select_hint = hk_cfg.select_region.replace("<", "").replace(">", "").upper()
+    quit_hint = hk_cfg.quit.replace("<", "").replace(">", "").upper()
+
+    hotkeys = GlobalHotkeys(
+        toggle_key=hk_cfg.toggle,
+        select_region_key=hk_cfg.select_region,
+        quit_key=hk_cfg.quit,
+    )
+    tray = TrayIcon(
+        toggle_key_hint=toggle_hint,
+        select_key_hint=select_hint,
+        quit_key_hint=quit_hint,
+    )
+    region_selector = RegionSelector()
+
+    # 6. Interaction Handlers
+    current_region: Region | None = target_region
+    was_running_before_select = is_running
+
+    def handle_toggle() -> None:
+        nonlocal is_running
+        if is_running:
+            is_running = False
+            bridge.stop_worker.emit()
+            overlay.clear()
+            overlay.hide()
+            tray.update_state(is_running=False, region=current_region)
+        else:
+            is_running = True
+            overlay.show()
+            bridge.start_worker.emit()
+            tray.update_state(is_running=True, region=current_region)
+        reg_tuple = (
+            (current_region.left, current_region.top, current_region.width, current_region.height)
+            if current_region else None
+        )
+        save_state(AppState(region=reg_tuple, is_running=is_running))
+
+    def handle_start_select() -> None:
+        nonlocal was_running_before_select, is_running
+        was_running_before_select = is_running
+        if is_running:
+            is_running = False
+            bridge.stop_worker.emit()
+        overlay.clear()
+        overlay.hide()
+        region_selector.start_selection()
+
+    def handle_region_selected(new_region: Region) -> None:
+        nonlocal current_region, is_running
+        current_region = new_region
+        best_screen = find_screen_with_largest_overlap(app.screens(), new_region) or app.primaryScreen()
+        overlay.set_target_screen(best_screen)
+        overlay.set_active_region(new_region)
+        bridge.set_region.emit(new_region)
+
+        is_running = True
+        overlay.show()
+        bridge.start_worker.emit()
+        tray.update_state(is_running=True, region=current_region)
+        save_state(
+            AppState(
+                region=(new_region.left, new_region.top, new_region.width, new_region.height),
+                is_running=True,
+            )
+        )
+
+    def handle_select_cancelled() -> None:
+        nonlocal is_running
+        if was_running_before_select:
+            is_running = True
+            overlay.show()
+            bridge.start_worker.emit()
+            tray.update_state(is_running=True, region=current_region)
+        else:
+            is_running = False
+            tray.update_state(is_running=False, region=current_region)
+
+    def handle_full_screen() -> None:
+        nonlocal current_region
+        current_region = None
+        primary = app.primaryScreen()
+        overlay.set_target_screen(primary)
+        overlay.set_active_region(None)
+        bridge.set_region.emit(None)
+        tray.update_state(is_running=is_running, region=None)
+        save_state(AppState(region=None, is_running=is_running))
+
+    hotkeys.toggle.connect(handle_toggle)
+    hotkeys.select_region.connect(handle_start_select)
+    hotkeys.quit.connect(app.quit)
+
+    tray.toggle_requested.connect(handle_toggle)
+    tray.select_region_requested.connect(handle_start_select)
+    tray.full_screen_requested.connect(handle_full_screen)
+    tray.quit_requested.connect(app.quit)
+
+    region_selector.region_selected.connect(handle_region_selected)
+    region_selector.cancelled.connect(handle_select_cancelled)
+
+    worker.error.connect(lambda msg: tray.notify("Pipeline Error", msg))
+
+    # 7. Clean shutdown wiring
     def cleanup() -> None:
-        logger.info("Shutting down overlay application...")
+        logger.info("Cleaning up and terminating Screen Translator...")
+        hotkeys.stop()
+        bridge.stop_worker.emit()
         worker.stop()
         thread.quit()
         thread.wait(2000)
+        tray.hide()
         pipeline.capturer.close()
+        if lock_file.isLocked():
+            lock_file.unlock()
 
     app.aboutToQuit.connect(cleanup)
 
-    # 7. Enable Ctrl+C termination in terminal
+    # 8. Start runtime services
+    if is_running:
+        overlay.show()
+        thread.started.connect(worker.start)
+    else:
+        overlay.hide()
+
+    tray.update_state(is_running=is_running, region=current_region)
+    tray.show()
+    hotkeys.start()
+    thread.start()
+
+    # 9. Terminal SIGINT handling
     signal.signal(signal.SIGINT, lambda *_: app.quit())
     sig_timer = QTimer()
     sig_timer.timeout.connect(lambda: None)
     sig_timer.start(200)
 
-    logger.info("Launching overlay window. Press Ctrl+C in terminal to exit.")
-    thread.start()
+    logger.info("Screen Translator running. System tray and hotkeys active.")
     return app.exec()
 
 

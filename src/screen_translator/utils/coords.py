@@ -57,3 +57,51 @@ def local_to_native(
     native_bottom = int(round(local_bottom * scale + origin_y))
 
     return (native_left, native_top, native_right, native_bottom)
+
+
+def find_screen_with_largest_overlap(screens: list, region: object | None) -> object | None:
+    """Find the QScreen with the largest physical pixel overlap with the given region.
+
+    Args:
+        screens: List of QScreen instances.
+        region: Region instance with left, top, right, bottom or None.
+
+    Returns:
+        QScreen | None: Screen with largest overlap area, or first screen / None.
+    """
+    if not screens:
+        return None
+    if region is None:
+        return screens[0]
+
+    best_screen = screens[0]
+    max_area = -1
+
+    for screen in screens:
+        dpr = max(0.01, float(screen.devicePixelRatio()))
+        geom = screen.geometry()
+        sl = int(round(geom.x() * dpr))
+        st = int(round(geom.y() * dpr))
+        sr = sl + int(round(geom.width() * dpr))
+        sb = st + int(round(geom.height() * dpr))
+
+        rl = getattr(region, "left", 0)
+        rt = getattr(region, "top", 0)
+        rr = getattr(region, "right", rl + getattr(region, "width", 0))
+        rb = getattr(region, "bottom", rt + getattr(region, "height", 0))
+
+        inter_l = max(rl, sl)
+        inter_t = max(rt, st)
+        inter_r = min(rr, sr)
+        inter_b = min(rb, sb)
+
+        overlap_w = max(0, inter_r - inter_l)
+        overlap_h = max(0, inter_b - inter_t)
+        area = overlap_w * overlap_h
+
+        if area > max_area:
+            max_area = area
+            best_screen = screen
+
+    return best_screen
+

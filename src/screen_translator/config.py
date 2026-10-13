@@ -65,6 +65,7 @@ class OverlayConfig:
     font_size: int = 14
     background_color: str = "#000000"
     text_color: str = "#FFFFFF"
+    show_region_border: bool = True
 
 
 @dataclass(frozen=True)
@@ -144,6 +145,8 @@ def _validate_config(config: AppConfig) -> None:
         raise ConfigError(f"overlay.background_color must be hex format (#RRGGBB), got: '{ov.background_color}'")
     if not HEX_COLOR_REGEX.match(ov.text_color):
         raise ConfigError(f"overlay.text_color must be hex format (#RRGGBB), got: '{ov.text_color}'")
+    if not isinstance(ov.show_region_border, bool):
+        raise ConfigError(f"overlay.show_region_border must be a boolean, got: {ov.show_region_border}")
 
     hk = config.hotkeys
     for name, val in [("toggle", hk.toggle), ("select_region", hk.select_region), ("quit", hk.quit)]:

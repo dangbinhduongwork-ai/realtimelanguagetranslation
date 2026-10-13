@@ -45,6 +45,7 @@ MODULES_TO_TEST = [
     "screen_translator.ui.region_selector",
     "screen_translator.ui.tray",
     "screen_translator.ui.hotkeys",
+    "screen_translator.state",
     "screen_translator.utils",
     "screen_translator.utils.coords",
     "screen_translator.utils.win_utils",
