@@ -115,3 +115,25 @@ def test_win_utils_callables() -> None:
     assert callable(win_utils.enable_dpi_awareness)
     assert callable(win_utils.exclude_window_from_capture)
     assert callable(win_utils.make_click_through)
+
+
+def test_app_factories() -> None:
+    """Verify that component factories instantiate pipeline components."""
+    from screen_translator.app import (
+        create_capturer,
+        create_detector,
+        create_ocr_engine,
+        create_pipeline,
+    )
+    from screen_translator.config import load_config
+
+    config = load_config()
+    capturer = create_capturer(config)
+    detector = create_detector(config)
+    ocr_engine = create_ocr_engine(config)
+    pipeline = create_pipeline(config)
+
+    assert capturer is not None
+    assert detector is not None
+    assert ocr_engine is not None
+    assert pipeline is not None

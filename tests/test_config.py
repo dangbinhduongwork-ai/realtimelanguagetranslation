@@ -28,6 +28,7 @@ def test_default_config_loading() -> None:
     assert config.ocr.engine == "rapidocr"
     assert config.ocr.min_confidence == 0.6
     assert config.ocr.merge_lines is True
+    assert config.ocr.max_gap_ratio == 0.8
     assert config.translate.provider == "google"
     assert config.translate.source_lang == "en"
     assert config.translate.target_lang == "vi"

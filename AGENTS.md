@@ -39,9 +39,15 @@ always-on-top overlay placed over the original text.
    - `exclude_window_from_capture(hwnd)`: `SetWindowDisplayAffinity` with `WDA_EXCLUDEFROMCAPTURE` (0x11), so our own overlay is never captured by OCR (fall back to a logged warning if unsupported).
    - `make_click_through(hwnd)`: `WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW`.
 
+## Architecture Additions (Stage 1)
+- `Pipeline`: Plain Python execution class in `pipeline.py` running capture -> change detection -> OCR -> grouping (pacing loop with target FPS, thread-safe, independent of Qt). `PipelineWorker` remains stubbed for Stage 3 Qt integration.
+- `ocr.max_gap_ratio` added to config (default 0.8) for vertical line clustering in `group_lines()`.
+- Component factory functions added to `app.py` (`create_capturer`, `create_detector`, `create_ocr_engine`, `create_pipeline`).
+- `RapidOcrEngine.warmup()` exposed for preloading ONNX models.
+
 ## Staging Roadmap
-- **Stage 0**: Scaffold project (folders, files, interfaces, config, tests, skeleton verification).
-- **Stage 1**: Capture + change detection + OCR (console output).
+- **Stage 0 [DONE]**: Scaffold project (folders, files, interfaces, config, tests, skeleton verification).
+- **Stage 1 [DONE]**: Capture (MSS) + change detection (cv2.absdiff) + OCR (RapidOCR) + grouping -> console output.
 - **Stage 2**: Translation + cache.
 - **Stage 3**: Overlay window (click-through, transparent, excluded from capture).
 - **Stage 4**: Hotkeys, region selector, tray icon, performance tuning.

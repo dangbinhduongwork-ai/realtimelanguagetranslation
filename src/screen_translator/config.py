@@ -43,6 +43,7 @@ class OcrConfig:
     engine: str = "rapidocr"
     min_confidence: float = 0.6
     merge_lines: bool = True
+    max_gap_ratio: float = 0.8
 
 
 @dataclass(frozen=True)
@@ -119,6 +120,8 @@ def _validate_config(config: AppConfig) -> None:
         raise ConfigError(f"ocr.min_confidence must be between 0.0 and 1.0, got: {o.min_confidence}")
     if not isinstance(o.merge_lines, bool):
         raise ConfigError(f"ocr.merge_lines must be a boolean, got: {o.merge_lines}")
+    if not isinstance(o.max_gap_ratio, (int, float)) or o.max_gap_ratio < 0.0:
+        raise ConfigError(f"ocr.max_gap_ratio must be a non-negative number, got: {o.max_gap_ratio}")
 
     t = config.translate
     if t.provider not in {"google"}:

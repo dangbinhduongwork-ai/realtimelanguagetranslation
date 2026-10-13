@@ -10,6 +10,7 @@ ocr:
   engine: rapidocr
   min_confidence: 0.6
   merge_lines: true
+  max_gap_ratio: 0.8
 
 translate:
   provider: google
