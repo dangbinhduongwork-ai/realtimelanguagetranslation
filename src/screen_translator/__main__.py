@@ -6,17 +6,20 @@ import argparse
 from datetime import datetime
 import importlib
 import logging
+import os
 from pathlib import Path
 import sys
 import threading
+import traceback
 
 import cv2
 
+from screen_translator import __version__
 from screen_translator.app import create_pipeline
 from screen_translator.config import load_config
 from screen_translator.logging_setup import setup_logging
 from screen_translator.models import Region, TextBlock, TranslatedBlock
-from screen_translator.utils.win_utils import enable_dpi_awareness
+from screen_translator.utils.win_utils import enable_dpi_awareness, show_fatal_error
 
 logger = logging.getLogger("screen_translator")
 
@@ -24,6 +27,7 @@ MODULES_TO_VERIFY: list[str] = [
     "screen_translator.config",
     "screen_translator.logging_setup",
     "screen_translator.models",
+    "screen_translator.paths",
     "screen_translator.pipeline",
     "screen_translator.app",
     "screen_translator.capture.base",
@@ -50,18 +54,56 @@ MODULES_TO_VERIFY: list[str] = [
 ]
 
 
-def run_check() -> int:
-    """Validate configuration and verify all modules import successfully."""
-    config = load_config()
-    setup_logging(level=config.logging.level)
+def run_check(deep: bool = False, config_path: str | Path | None = None) -> int:
+    """Validate configuration, verify module imports, and optionally test OCR inference."""
+    try:
+        config = load_config(config_path)
+        setup_logging(level=config.logging.level)
 
-    logger.debug("Loading and verifying skeleton modules...")
-    for mod_name in MODULES_TO_VERIFY:
-        importlib.import_module(mod_name)
-        logger.debug("Module loaded successfully: %s", mod_name)
+        logger.debug("Loading and verifying application modules...")
+        for mod_name in MODULES_TO_VERIFY:
+            importlib.import_module(mod_name)
+            logger.debug("Module loaded successfully: %s", mod_name)
 
-    logger.info("OK: skeleton loaded")
-    return 0
+        if deep:
+            logger.info("Running deep verification on RapidOCR neural models...")
+            import numpy as np
+            from screen_translator.app import create_ocr_engine
+
+            img = np.full((160, 500, 3), 255, dtype=np.uint8)
+            cv2.putText(
+                img,
+                "Hello World",
+                (40, 105),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.8,
+                (0, 0, 0),
+                3,
+                cv2.LINE_AA,
+            )
+            engine = create_ocr_engine(config)
+            blocks = engine.recognize(img)
+            detected = " ".join(b.text for b in blocks).lower()
+            if "hello" not in detected:
+                logger.critical("Deep check failed: Expected 'hello' in '%s'", detected)
+                if sys.stderr is not None:
+                    print(f"Deep check FAILED: Expected 'hello', got: '{detected}'", file=sys.stderr)
+                return 1
+
+            logger.info("OK: deep check passed (ONNX models and inference verified)")
+            if sys.stdout is not None:
+                print("OK: deep check passed")
+            return 0
+
+        logger.info("OK: skeleton loaded")
+        if sys.stdout is not None:
+            print("OK: skeleton loaded")
+        return 0
+    except Exception as exc:
+        logger.critical("Self-check failed: %s", exc, exc_info=True)
+        if sys.stderr is not None:
+            print(f"Check FAILED: {exc}", file=sys.stderr)
+        return 1
 
 
 def _parse_region(region_str: str | None) -> Region | None:
@@ -79,7 +121,7 @@ def _parse_region(region_str: str | None) -> Region | None:
 
 def run_console(args: argparse.Namespace) -> int:
     """Run console capture, OCR, and translation pipeline loop."""
-    config = load_config()
+    config = load_config(args.config)
     log_level = args.log_level or config.logging.level
     setup_logging(level=log_level)
 
@@ -108,84 +150,118 @@ def run_console(args: argparse.Namespace) -> int:
             translate_latencies.append(pipeline.last_translate_time)
 
         if debug_path and pipeline.last_frame is not None:
-            raw_path = debug_path / f"frame_{frame_counter:04d}_raw.png"
-            cv2.imwrite(str(raw_path), pipeline.last_frame.image)
+            raw_file = debug_path / f"frame_{frame_counter:04d}_raw.png"
+            cv2.imwrite(str(raw_file), pipeline.last_frame.image)
 
             annotated = pipeline.last_frame.image.copy()
-            reg_l = pipeline.last_frame.region.left
-            reg_t = pipeline.last_frame.region.top
-            for item in blocks:
-                bbox = item.source.bbox if isinstance(item, TranslatedBlock) else item.bbox
-                pt1 = (bbox[0] - reg_l, bbox[1] - reg_t)
-                pt2 = (bbox[2] - reg_l, bbox[3] - reg_t)
-                cv2.rectangle(annotated, pt1, pt2, (0, 255, 0), 2)
-            ann_path = debug_path / f"frame_{frame_counter:04d}_ocr.png"
-            cv2.imwrite(str(ann_path), annotated)
+            for b in blocks:
+                box = b.source.bbox if isinstance(b, TranslatedBlock) else b.bbox
+                x1, y1, x2, y2 = box
+                rx, ry = pipeline.last_frame.region.left, pipeline.last_frame.region.top
+                lx1, ly1, lx2, ly2 = x1 - rx, y1 - ry, x2 - rx, y2 - ry
+                cv2.rectangle(annotated, (lx1, ly1), (lx2, ly2), (0, 255, 0), 2)
+            ann_file = debug_path / f"frame_{frame_counter:04d}_ocr.png"
+            cv2.imwrite(str(ann_file), annotated)
 
-        if not blocks:
-            return
-
-        ts_str = datetime.now().strftime("%H:%M:%S")
-        for item in blocks:
-            if isinstance(item, TranslatedBlock):
-                print(f"[{ts_str}] {item.source.bbox}")
-                print(f"  EN: {item.source.text}")
-                print(f"  VI: {item.translated_text}")
+        now_str = datetime.now().strftime("%H:%M:%S")
+        for b in blocks:
+            if isinstance(b, TranslatedBlock):
+                print(f"[{now_str}] ({b.source.bbox[0]}, {b.source.bbox[1]}, {b.source.bbox[2]}, {b.source.bbox[3]})")
+                print(f"  EN: {b.source.text}")
+                print(f"  VI: {b.translated_text}")
             else:
-                print(f"[{ts_str}] {item.bbox} conf={item.confidence:.2f} | {item.text}")
-        print()
-        sys.stdout.flush()
+                print(f"[{now_str}] ({b.bbox[0]}, {b.bbox[1]}, {b.bbox[2]}, {b.bbox[3]})")
+                print(f"  OCR: {b.text} (conf: {b.confidence:.2f})")
 
     stop_event = threading.Event()
-    fps = float(config.capture.fps)
 
     try:
         if args.once:
-            logger.info("Executing single pass (--once)...")
-            res = pipeline.step(region=target_region)
-            if res is not None:
-                handle_result(res)
-        else:
-            logger.info("Starting console loop at %.1f FPS (press Ctrl+C to exit)...", fps)
-            pipeline.run(stop_event=stop_event, fps=fps, on_result=handle_result, region=target_region)
+            logger.info("Executing single capture pass...")
+            result = pipeline.step(region=target_region)
+            if result is not None:
+                handle_result(result)
+            return 0
+
+        logger.info("Starting continuous pipeline. Press Ctrl+C to terminate.")
+        pipeline.run(stop_event=stop_event, fps=config.capture.fps, on_result=handle_result, region=target_region)
     except KeyboardInterrupt:
-        logger.info("Interrupted by user. Exiting cleanly...")
+        logger.info("Stopping pipeline loop...")
     finally:
         stop_event.set()
         pipeline.capturer.close()
 
-        # Print final session performance and cache statistics
         print("\n--- Session Statistics ---")
         if pipeline.translator and hasattr(pipeline.translator, "cache"):
-            hits, misses = pipeline.translator.cache.stats()
-            total = hits + misses
-            rate = (hits / total * 100) if total > 0 else 0.0
+            stats = pipeline.translator.cache.stats
+            hits, misses, rate = stats["hits"], stats["misses"], stats["hit_rate"] * 100
             print(f"Cache stats: {hits} hits, {misses} misses ({rate:.1f}% hit rate)")
         if ocr_latencies:
-            avg_ocr = (sum(ocr_latencies) / len(ocr_latencies)) * 1000
-            print(f"Average OCR latency: {avg_ocr:.1f} ms")
+            print(f"Average OCR latency: {sum(ocr_latencies) / len(ocr_latencies) * 1000:.1f} ms")
         if translate_latencies:
-            avg_tr = (sum(translate_latencies) / len(translate_latencies)) * 1000
-            print(f"Average Translate latency: {avg_tr:.1f} ms")
+            print(f"Average Translate latency: {sum(translate_latencies) / len(translate_latencies) * 1000:.1f} ms")
 
     return 0
 
 
 def main() -> int:
-    """Parse CLI options and dispatch actions."""
+    """Parse CLI options and dispatch actions with windowed safety and exception handling."""
+    # Windowed safety: Ensure sys.stdout and sys.stderr are valid file-like streams
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    elif hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
+    elif hasattr(sys.stderr, "reconfigure"):
+        try:
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+    # Global unhandled exception hook showing native dialog box
+    def _fatal_excepthook(exctype, value, tb):
+        trace = "".join(traceback.format_exception(exctype, value, tb))
+        logger.critical("Uncaught fatal exception:\n%s", trace)
+        show_fatal_error(
+            "Screen Translator - Fatal Error",
+            f"An unexpected error occurred:\n\n{value}\n\nCheck logs for details.",
+        )
+        if sys.__excepthook__ is not None:
+            sys.__excepthook__(exctype, value, tb)
+
+    sys.excepthook = _fatal_excepthook
+
     enable_dpi_awareness()
 
-    if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
-
     parser = argparse.ArgumentParser(
-        prog="screen_translator",
+        prog="ScreenTranslator",
         description="Screen Translator: Real-time on-screen OCR and translation overlay for Windows.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"Screen Translator {__version__}",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to custom configuration YAML file.",
     )
     parser.add_argument(
         "--check",
         action="store_true",
         help="Validate configuration and ensure all project modules load without error.",
+    )
+    parser.add_argument(
+        "--deep",
+        action="store_true",
+        help="Perform deep verification testing bundled OCR neural models and inference.",
     )
     parser.add_argument(
         "--console",
@@ -241,8 +317,8 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    if args.check:
-        return run_check()
+    if args.check or args.deep:
+        return run_check(deep=args.deep, config_path=args.config)
 
     if args.bench:
         from screen_translator.benchmark import run_bench
@@ -253,7 +329,7 @@ def main() -> int:
 
     # Default (no flags): launch transparent GUI overlay window mode
     from screen_translator.app import run_overlay
-    config = load_config()
+    config = load_config(args.config)
     return run_overlay(config, args)
 
 

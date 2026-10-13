@@ -10,6 +10,8 @@ from typing import Any
 
 import yaml
 
+from screen_translator.paths import find_config
+
 logger = logging.getLogger(__name__)
 
 HEX_COLOR_REGEX = re.compile(r"^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
@@ -194,12 +196,8 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         if not target_path.is_file():
             raise ConfigError(f"Configuration file not found: {target_path}")
     else:
-        candidates = [
-            Path.cwd() / "config.yaml",
-            Path(__file__).resolve().parent.parent.parent / "config.yaml",
-        ]
-        target_path = next((p for p in candidates if p.is_file()), None)
-        if target_path is None:
+        target_path = find_config()
+        if not target_path.is_file():
             logger.info("No config.yaml found in default paths, using built-in defaults.")
             default_cfg = AppConfig()
             _validate_config(default_cfg)

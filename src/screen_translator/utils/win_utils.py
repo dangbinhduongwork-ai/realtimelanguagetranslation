@@ -159,3 +159,27 @@ def make_click_through(hwnd: int) -> bool:
     except Exception as exc:
         logger.warning("Error making window %s click-through: %s", hwnd, exc)
         return False
+
+
+def show_fatal_error(title: str, message: str) -> None:
+    """Display a native Win32 modal error dialog box using MessageBoxW.
+
+    Args:
+        title: Dialog box title bar text.
+        message: Error details or description.
+    """
+    if sys.platform == "win32":
+        try:
+            mb_iconerror = 0x00000010
+            mb_ok = 0x00000000
+            ctypes.windll.user32.MessageBoxW(0, str(message), str(title), mb_iconerror | mb_ok)
+            return
+        except Exception as exc:
+            logger.debug("MessageBoxW failed: %s", exc)
+
+    if sys.stderr is not None:
+        try:
+            print(f"FATAL ERROR [{title}]: {message}", file=sys.stderr)
+        except Exception:
+            pass
+

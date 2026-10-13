@@ -137,17 +137,24 @@ screen-translator/
 ├─ README.md                  # Project overview, setup, usage & roadmap
 ├─ requirements.txt           # Production dependencies
 ├─ requirements-dev.txt       # Development & testing dependencies
+├─ requirements-build.txt     # Packaging dependencies (PyInstaller)
 ├─ pytest.ini                 # Pytest configuration and markers
 ├─ .gitignore                 # Python, venv, and editor ignore rules
 ├─ config.yaml                # Application configuration
+├─ run_app.py                 # PyInstaller application entry script
+├─ screen_translator.spec     # PyInstaller build specification
+├─ scripts/
+│  ├─ make_icon.py            # Generates assets/app.ico using PySide6 QPainter
+│  └─ build.ps1               # Automated build, smoke test & packaging script
 ├─ src/screen_translator/
-│  ├─ __init__.py
-│  ├─ __main__.py             # Entry point supporting --check, --console, and --bench
+│  ├─ __init__.py             # Exposes __version__
+│  ├─ __main__.py             # Entry point supporting --check, --deep, --console, --bench
 │  ├─ app.py                  # Component factory functions, WorkerBridge & wiring
 │  ├─ benchmark.py            # Latency and CPU benchmarking suite
 │  ├─ config.py               # Loads & validates config.yaml into dataclasses
-│  ├─ logging_setup.py        # Centralized logging configuration
+│  ├─ logging_setup.py        # Windowed-safe logging configuration (rotating file)
 │  ├─ models.py               # Frozen dataclasses (Region, Frame, TextBlock, TranslatedBlock)
+│  ├─ paths.py                # Runtime path resolution, frozen bundle & config detection
 │  ├─ pipeline.py             # Pipeline loop + PipelineWorker (QObject in QThread)
 │  ├─ state.py                # AppState persistence to %APPDATA%/ScreenTranslator/state.json
 │  ├─ capture/
@@ -178,9 +185,11 @@ screen-translator/
 │     ├─ __init__.py
 │     ├─ coords.py            # Coordinate transformations & monitor overlap resolution
 │     ├─ stabilization.py     # blocks_equivalent() visual jitter stabilizer
-│     └─ win_utils.py         # Win32 DPI awareness, capture exclusion, click-through
+│     └─ win_utils.py         # Win32 DPI awareness, capture exclusion, click-through, fatal dialog
 └─ tests/
    ├─ test_config.py          # Configuration loading and schema validation
+   ├─ test_paths.py           # Path resolution, frozen bundle, config precedence tests
+   ├─ test_logging_setup.py   # Windowed logger safety (None stdout/stderr)
    ├─ test_imports.py         # Module imports, model invariants, factories
    ├─ test_coords.py          # Coordinate transformation and DPR scaling tests
    ├─ test_frame_diff.py      # Unit tests for ChangeDetector (standard, rolling, commit)
@@ -292,9 +301,59 @@ python -m screen_translator --bench --frames 20 --no-translate
 
 ---
 
+## Distribution & Packaging (Stage 5B)
+
+Screen Translator can be compiled into a standalone Windows folder bundle (`dist/ScreenTranslator`) that runs on Windows 10/11 machines **without requiring Python** or any external dependencies installed.
+
+### 1. Building the Executable
+
+Run the automated build script in PowerShell:
+
+```powershell
+# Standard production build + smoke test + release ZIP:
+.\scripts\build.ps1 -Clean -Zip
+
+# Debug build with an attached console window:
+.\scripts\build.ps1 -Console
+```
+
+The script performs the following end-to-end steps:
+1. **Checks Python environment**: Verifies Python 3.10 - 3.12.
+2. **Installs dependencies**: `requirements.txt` and `requirements-build.txt` (PyInstaller).
+3. **Generates App Icon**: Uses PySide6 (`scripts/make_icon.py`) to render `assets/app.ico` (256x256).
+4. **Packages with PyInstaller**: Compiles `run_app.py` using `screen_translator.spec` in `--onedir` windowed mode (`console=False`, `upx=False`).
+5. **Runs Automated Smoke Test**: Executes `dist\ScreenTranslator\ScreenTranslator.exe --check --deep` with `Start-Process -Wait -PassThru` and ensures zero exit code (verifies that RapidOCR ONNX models and configurations are bundled and inferring properly).
+6. **Produces Release ZIP**: Creates `dist\ScreenTranslator-<version>-win64.zip` and prints bundle sizes.
+
+### 2. Configuration, Logs, and State Storage
+
+- **Configuration Resolution Order**:
+  1. `--config <path>`: Explicit CLI parameter.
+  2. **Portable Mode**: `config.yaml` placed in the same folder as `ScreenTranslator.exe`.
+  3. **User Profile**: `%APPDATA%\ScreenTranslator\config.yaml`. On first launch, the bundled default configuration is copied here automatically if no configuration exists.
+- **Log Files**:
+  - Saved to `%APPDATA%\ScreenTranslator\logs\app.log` via `RotatingFileHandler` (1 MB max size, up to 3 backups).
+  - In windowed executable mode, standard output is directed safely to `os.devnull` with crash dialog popups via Win32 `MessageBoxW`.
+- **Saved State**:
+  - Remembers selected screen region and active state in `%APPDATA%\ScreenTranslator\state.json`.
+
+### 3. Windows SmartScreen & Antivirus False Positives
+
+- **Unsigned Executable**: Because the release binary is not signed with an expensive Extended Validation (EV) certificate, Windows SmartScreen will show *"Windows protected your PC"* on first launch.
+  - Click **"More info"** -> Click **"Run anyway"**.
+- **Antivirus Heuristics**: Global hotkey monitoring relies on Windows low-level keyboard hooks (`pynput.keyboard._win32`), which some generic antivirus engines flag as heuristic false positives. The application is completely open-source and performs no telemetry.
+
+### 4. Uninstallation
+
+Screen Translator requires no registry changes or system installers. To completely uninstall:
+1. Delete the application directory / unzipped `ScreenTranslator/` folder.
+2. Delete the user data directory: `%APPDATA%\ScreenTranslator`.
+
+---
+
 ## Troubleshooting
 
-- **"Another instance of Screen Translator is already running."**: An existing process is active or the previous session did not close. Check Windows Task Manager for `python.exe` or delete `%TEMP%/screen_translator.lock`.
+- **"Another instance of Screen Translator is already running."**: An existing process is active or the previous session did not close. Check Windows Task Manager for `ScreenTranslator.exe` or delete `%TEMP%/screen_translator.lock`.
 - **Global hotkey not responding**: Ensure no other application (e.g. graphics driver utilities) has registered an exclusive system hook on `Ctrl+Alt+T` / `Ctrl+Alt+R`. Custom hotkeys can be assigned in `config.yaml`.
 - **Overlay alignment on multi-monitor setups**: When dragging a region onto a secondary monitor, the overlay automatically identifies the screen with the largest overlap and aligns using native physical device pixel ratios.
 - **High CPU usage when idle**: When paused via `Ctrl+Alt+T` or tray icon, the single-shot pipeline timer stops completely, reducing CPU consumption to near 0%.
@@ -312,6 +371,7 @@ python -m screen_translator --bench --frames 20 --no-translate
 7. **Single-Instance Guard**: Launch a second instance in another terminal -> prints `"Another instance of Screen Translator is already running."` and exits immediately.
 8. **Motion Settle**: Scroll a long webpage -> notice OCR does not spam during scrolling; translates shortly after motion settles.
 9. **No Static Flicker**: Leave the screen static -> overlay remains crisp with 0 repainting/flickering.
+10. **Standalone Windows Executable**: Build and run on a machine without Python installed -> tray icon appears, OCR and translation function seamlessly.
 
 ---
 
@@ -323,5 +383,6 @@ python -m screen_translator --bench --frames 20 --no-translate
 - **Stage 3 [DONE]**: Transparent click-through overlay window with capture exclusion and per-monitor scaling.
 - **Stage 4 [DONE]**: Global hotkeys, drag-to-select region selector, system tray icon, state persistence, single-instance guard.
 - **Stage 5A [DONE]**: Adaptive upscale, motion settle gate, result stabilization, benchmark suite.
+- **Stage 5B [DONE]**: Standalone Windows executable packaging with PyInstaller (--onedir, windowed, assets/app.ico, build.ps1, automated smoke test & zip distribution).
 
 

@@ -74,6 +74,15 @@ always-on-top overlay placed over the original text.
 - `utils/stabilization.py`: Pure function `blocks_equivalent(prev, new, tol_px=4)` preventing redundant repaints and overlay flicker on static/jittery text.
 - `benchmark.py`: Command `--bench [--frames N]` measuring average and p95 latencies for capture, diff, OCR, grouping, translation, and CPU load.
 
+## Architecture Additions (Stage 5B)
+- `paths.py`: Runtime path resolution, `is_frozen()`, `resource_path()`, `app_dir()`, `data_dir()` (%APPDATA%/ScreenTranslator), and hierarchical config search (`--config` -> portable adjacent file -> user appdata).
+- Windowed safety: `sys.stdout` and `sys.stderr` safely wrapped/redirected to `os.devnull` when None in windowed exes, `RotatingFileHandler` at `%APPDATA%/ScreenTranslator/logs/app.log` (1 MB x 3), native `ctypes` `MessageBoxW` fatal excepthook dialog.
+- Launcher & CLI: Root launcher `run_app.py` invoking `multiprocessing.freeze_support()`, `__version__` exposed in `screen_translator`, `--version` CLI flag, and version displayed in system tray tooltip.
+- Deep self-check: Extended `--check` with `--deep` executing RapidOCR neural inference on a synthetic image to verify bundled ONNX models.
+- PyInstaller spec & packaging: `screen_translator.spec` configuring `--onedir`, `console=False`, `upx=False`, bundling rapidocr models, onnxruntime DLLs, and `assets/app.ico`.
+- Icon rendering: `scripts/make_icon.py` drawing high-resolution 256x256 `assets/app.ico` using PySide6 `QPainter`.
+- Build automation: `scripts/build.ps1` supporting `-Clean`, `-Console`, and `-Zip` flags, executing the automated `--check --deep` smoke test, and creating distribution release archives.
+
 ## Complete Project Structure
 ```
 screen-translator/
@@ -81,17 +90,24 @@ screen-translator/
 ├─ README.md                  # Project overview, setup, usage & roadmap
 ├─ requirements.txt           # Production dependencies
 ├─ requirements-dev.txt       # Development & testing dependencies
+├─ requirements-build.txt     # Packaging dependencies (PyInstaller)
 ├─ pytest.ini                 # Pytest configuration and markers
 ├─ .gitignore                 # Git ignore rules
 ├─ config.yaml                # Application configuration
+├─ run_app.py                 # Application launcher & freeze_support entry point
+├─ screen_translator.spec     # PyInstaller build specification
+├─ scripts/
+│  ├─ make_icon.py            # Generates assets/app.ico via PySide6 QPainter
+│  └─ build.ps1               # Automated build, smoke test & packaging script
 ├─ src/screen_translator/
-│  ├─ __init__.py
-│  ├─ __main__.py             # Entry point supporting --check, --console, and --bench
+│  ├─ __init__.py             # Exposes __version__
+│  ├─ __main__.py             # Entry point supporting --check, --deep, --console, and --bench
 │  ├─ app.py                  # Component factory functions, WorkerBridge & wiring
 │  ├─ benchmark.py            # Latency and CPU benchmarking suite
 │  ├─ config.py               # Loads & validates config.yaml into dataclasses
-│  ├─ logging_setup.py        # Centralized logging configuration
+│  ├─ logging_setup.py        # Centralized logging configuration (rotating file & safe stdout)
 │  ├─ models.py               # Frozen dataclasses (Region, Frame, TextBlock, TranslatedBlock)
+│  ├─ paths.py                # Runtime path resolution, frozen bundle & config detection
 │  ├─ pipeline.py             # Pipeline loop + PipelineWorker (QObject in QThread)
 │  ├─ state.py                # AppState persistence to %APPDATA%/ScreenTranslator/state.json
 │  ├─ capture/
@@ -122,9 +138,11 @@ screen-translator/
 │     ├─ __init__.py
 │     ├─ coords.py            # Coordinate transformations & monitor overlap resolution
 │     ├─ stabilization.py     # blocks_equivalent() visual jitter stabilizer
-│     └─ win_utils.py         # Win32 DPI awareness, capture exclusion, click-through
+│     └─ win_utils.py         # Win32 DPI awareness, capture exclusion, click-through, fatal dialog
 └─ tests/
    ├─ test_config.py          # Configuration loading and schema validation
+   ├─ test_paths.py           # Path resolution, frozen bundle, config precedence tests
+   ├─ test_logging_setup.py   # Windowed logger safety (None stdout/stderr)
    ├─ test_imports.py         # Module imports, model invariants, factories
    ├─ test_coords.py          # Coordinate transformation and DPR scaling tests
    ├─ test_frame_diff.py      # Unit tests for ChangeDetector (standard, rolling, commit)
@@ -148,5 +166,6 @@ screen-translator/
 - **Stage 3 [DONE]**: Overlay window (click-through, transparent, excluded from capture).
 - **Stage 4 [DONE]**: Hotkeys, region selector, tray icon, state persistence, single-instance guard.
 - **Stage 5A [DONE]**: Adaptive upscale, motion settle gate, result stabilization, benchmark suite.
+- **Stage 5B [DONE]**: Standalone Windows executable packaging with PyInstaller (--onedir, windowed, assets/app.ico, build.ps1, automated smoke test & zip distribution).
 
 

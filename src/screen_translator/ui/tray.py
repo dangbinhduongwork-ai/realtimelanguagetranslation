@@ -9,6 +9,7 @@ from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QAction, QBrush, QColor, QFont, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
+from screen_translator import __version__
 from screen_translator.models import Region
 
 logger = logging.getLogger(__name__)
@@ -111,7 +112,7 @@ class TrayIcon(QSystemTrayIcon):
         else:
             region_text = "Full Screen"
 
-        self.setToolTip(f"Screen Translator - {status_text}\n{region_text}")
+        self.setToolTip(f"Screen Translator v{__version__} - {status_text}\n{region_text}")
 
     def notify(self, title: str, message: str) -> None:
         """Display system balloon notification throttled to 1 per 30 seconds per message."""

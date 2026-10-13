@@ -8,6 +8,8 @@ import logging
 import os
 from pathlib import Path
 
+from screen_translator.paths import data_dir
+
 logger = logging.getLogger(__name__)
 
 
@@ -21,12 +23,7 @@ class AppState:
 
 def get_default_state_path() -> Path:
     """Return default state.json path inside %APPDATA%/ScreenTranslator."""
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        base_dir = Path(appdata)
-    else:
-        base_dir = Path.home() / ".config"
-    return base_dir / "ScreenTranslator" / "state.json"
+    return data_dir() / "state.json"
 
 
 def load_state(path: Path | None = None) -> AppState:

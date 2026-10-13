@@ -25,6 +25,7 @@ MODULES_TO_TEST = [
     "screen_translator.config",
     "screen_translator.logging_setup",
     "screen_translator.models",
+    "screen_translator.paths",
     "screen_translator.pipeline",
     "screen_translator.app",
     "screen_translator.capture",
