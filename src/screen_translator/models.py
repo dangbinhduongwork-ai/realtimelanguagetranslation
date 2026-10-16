@@ -71,11 +71,15 @@ class TextBlock:
         text: Recognized text string.
         bbox: (left, top, right, bottom) screen coordinates bounding the text.
         confidence: Recognition confidence score between 0.0 and 1.0.
+        line_height: Median height of original OCR lines in pixels (derived if 0.0).
+        line_count: Number of merged lines in this block.
     """
 
     text: str
     bbox: tuple[int, int, int, int]
     confidence: float
+    line_height: float = 0.0
+    line_count: int = 1
 
     def __post_init__(self) -> None:
         """Validate bounding box and confidence score."""
@@ -88,6 +92,12 @@ class TextBlock:
             raise ValueError(f"Invalid bbox: bottom ({bottom}) < top ({top})")
         if not (0.0 <= self.confidence <= 1.0):
             raise ValueError(f"confidence must be between 0.0 and 1.0, got {self.confidence}")
+
+        # If line_height is 0.0, derive from bbox height / line_count
+        if self.line_height <= 0.0:
+            box_h = float(max(1, bottom - top))
+            cnt = max(1, self.line_count)
+            object.__setattr__(self, "line_height", box_h / cnt)
 
 
 @dataclass(frozen=True)

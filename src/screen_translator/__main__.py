@@ -32,6 +32,7 @@ MODULES_TO_VERIFY: list[str] = [
     "screen_translator.app",
     "screen_translator.capture.base",
     "screen_translator.capture.mss_capturer",
+    "screen_translator.capture.dxcam_capturer",
     "screen_translator.capture.frame_diff",
     "screen_translator.capture.settle",
     "screen_translator.ocr.base",
@@ -42,6 +43,7 @@ MODULES_TO_VERIFY: list[str] = [
     "screen_translator.translate.filters",
     "screen_translator.translate.google_translator",
     "screen_translator.translate.cache",
+    "screen_translator.ui.layout",
     "screen_translator.ui.overlay_window",
     "screen_translator.ui.region_selector",
     "screen_translator.ui.tray",
@@ -49,6 +51,8 @@ MODULES_TO_VERIFY: list[str] = [
     "screen_translator.state",
     "screen_translator.benchmark",
     "screen_translator.utils.coords",
+    "screen_translator.utils.loop_watchdog",
+    "screen_translator.utils.overlay_filter",
     "screen_translator.utils.stabilization",
     "screen_translator.utils.win_utils",
 ]
@@ -104,6 +108,114 @@ def run_check(deep: bool = False, config_path: str | Path | None = None) -> int:
         if sys.stderr is not None:
             print(f"Check FAILED: {exc}", file=sys.stderr)
         return 1
+
+
+def run_check_exclusion(backend: str = "mss") -> int:
+    """Run diagnostic verifying whether screen capture excludes our overlay window."""
+    import time
+    import numpy as np
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QColor, QPainter
+    from PySide6.QtWidgets import QApplication, QWidget
+    from screen_translator.capture.dxcam_capturer import DxcamCapturer
+    from screen_translator.capture.mss_capturer import MssCapturer
+    from screen_translator.models import Region
+    from screen_translator.utils.win_utils import (
+        exclude_window_from_capture,
+        get_window_display_affinity,
+        get_windows_build_number,
+        make_click_through,
+    )
+
+    enable_dpi_awareness()
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+
+    screen = app.primaryScreen()
+    dpr = screen.devicePixelRatio() if screen else 1.0
+
+    class MagentaTestWindow(QWidget):
+        def __init__(self) -> None:
+            super().__init__(
+                None,
+                Qt.FramelessWindowHint
+                | Qt.WindowStaysOnTopHint
+                | Qt.Tool
+                | Qt.WindowTransparentForInput,
+            )
+            self.setAttribute(Qt.WA_TranslucentBackground, True)
+            self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+            self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            self.setGeometry(200, 200, 400, 250)
+
+        def paintEvent(self, event) -> None:
+            painter = QPainter(self)
+            painter.fillRect(0, 0, 400, 250, QColor(255, 0, 255))
+            painter.end()
+
+    window = MagentaTestWindow()
+    window.show()
+    app.processEvents()
+
+    hwnd = int(window.winId())
+    build = get_windows_build_number()
+
+    # Apply exclusion then click-through (matching app order)
+    res_excl = exclude_window_from_capture(hwnd)
+    res_click = make_click_through(hwnd)
+    aff = get_window_display_affinity(hwnd)
+
+    logger.info("Windows build: %d", build)
+    logger.info("exclude_window_from_capture(HWND=%s): %s", hwnd, res_excl)
+    logger.info("GetWindowDisplayAffinity(HWND=%s): %s", hwnd, f"{aff:#x}" if aff is not None else "None")
+
+    if sys.stdout is not None:
+        print(f"Windows build number: {build}")
+        print(f"SetWindowDisplayAffinity applied: {res_excl}")
+        print(f"GetWindowDisplayAffinity readback: {f'0x{aff:x}' if aff is not None else 'None'}")
+
+    # Wait 700ms for desktop compositor and capture buffer to settle
+    start_time = time.monotonic()
+    while time.monotonic() - start_time < 0.700:
+        app.processEvents()
+        time.sleep(0.02)
+
+    # Capture the exact 400x250 area in physical native pixels
+    phys_x = int(round(200 * dpr))
+    phys_y = int(round(200 * dpr))
+    phys_w = int(round(400 * dpr))
+    phys_h = int(round(250 * dpr))
+    test_region = Region(left=phys_x, top=phys_y, width=phys_w, height=phys_h)
+
+    capturer = DxcamCapturer() if backend.lower() == "dxcam" else MssCapturer()
+    try:
+        frame = capturer.grab(test_region)
+        img = frame.image  # BGR format from OpenCV / MSS
+        # Magenta: B >= 180, G <= 70, R >= 180
+        magenta_mask = (img[:, :, 0] > 180) & (img[:, :, 1] < 70) & (img[:, :, 2] > 180)
+        magenta_fraction = float(np.mean(magenta_mask))
+
+        if sys.stdout is not None:
+            print(f"Backend tested: {backend}")
+            print(f"Near-magenta pixel fraction: {magenta_fraction:.2%}")
+
+        if magenta_fraction < 0.01:
+            logger.info("PASS: capture exclusion works with %s (fraction: %.2f%%)", backend, magenta_fraction * 100)
+            if sys.stdout is not None:
+                print(f"PASS: capture exclusion works with {backend}")
+            return 0
+        else:
+            logger.error("FAIL: capture exclusion DOES NOT work with %s (fraction: %.2f%%)", backend, magenta_fraction * 100)
+            if sys.stderr is not None:
+                print(
+                    f"FAIL: capture exclusion DOES NOT work with {backend}, overlay text will be captured (magenta fraction: {magenta_fraction:.2%})",
+                    file=sys.stderr,
+                )
+            return 1
+    finally:
+        capturer.close()
+        window.close()
 
 
 def _parse_region(region_str: str | None) -> Region | None:
@@ -308,6 +420,18 @@ def main() -> int:
         help="Number of frames to benchmark (default: 20).",
     )
     parser.add_argument(
+        "--check-exclusion",
+        action="store_true",
+        help="Run diagnostic test verifying whether capture exclusion works with the selected backend.",
+    )
+    parser.add_argument(
+        "--backend",
+        type=str,
+        default="mss",
+        choices=["mss", "dxcam"],
+        help="Capture backend to test with --check-exclusion ('mss' or 'dxcam').",
+    )
+    parser.add_argument(
         "--log-level",
         type=str,
         default=None,
@@ -316,6 +440,9 @@ def main() -> int:
     )
 
     args = parser.parse_args()
+
+    if args.check_exclusion:
+        return run_check_exclusion(backend=args.backend)
 
     if args.check or args.deep:
         return run_check(deep=args.deep, config_path=args.config)

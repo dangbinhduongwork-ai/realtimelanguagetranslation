@@ -16,6 +16,13 @@ from screen_translator.models import Frame, Region, TextBlock, TranslatedBlock
 from screen_translator.ocr.base import OcrEngine
 from screen_translator.ocr.grouping import group_lines
 from screen_translator.translate.base import TranslationError, Translator
+from screen_translator.translate.filters import VIETNAMESE_DIACRITICS, needs_translation
+from screen_translator.utils.loop_watchdog import LoopWatchdog
+from screen_translator.utils.overlay_filter import (
+    bbox_overlaps,
+    is_similar_to_active_translation,
+    strip_accents,
+)
 from screen_translator.utils.stabilization import blocks_equivalent
 
 logger = logging.getLogger(__name__)
@@ -39,6 +46,8 @@ class Pipeline:
         max_wait_ms: int = 1500,
         motion_detector: ChangeDetector | None = None,
         settle_gate: SettleGate | None = None,
+        watchdog: LoopWatchdog | None = None,
+        self_filter_ratio: float = 0.75,
     ) -> None:
         """Initialize pipeline with engine components.
 
@@ -53,6 +62,8 @@ class Pipeline:
             max_wait_ms: Maximum duration (ms) to debounce continuous screen motion.
             motion_detector: Optional ChangeDetector in rolling mode.
             settle_gate: Optional SettleGate instance.
+            watchdog: Optional LoopWatchdog instance to detect/throttle feedback loops.
+            self_filter_ratio: Similarity ratio threshold to drop/preserve active overlay text.
         """
         self.capturer = capturer
         self.detector = detector
@@ -60,6 +71,8 @@ class Pipeline:
         self.merge_lines = merge_lines
         self.max_gap_ratio = max_gap_ratio
         self.translator = translator
+        self.self_filter_ratio = float(self_filter_ratio)
+        self.watchdog = watchdog or LoopWatchdog()
 
         self.motion_detector = motion_detector or ChangeDetector(
             threshold=detector.threshold, rolling=True
@@ -70,6 +83,7 @@ class Pipeline:
 
         self.last_frame: Frame | None = None
         self.last_ocr_time: float = 0.0
+        self.last_group_time: float = 0.0
         self.last_translate_time: float = 0.0
         self._last_emitted_blocks: list[TranslatedBlock] | list[TextBlock] | None = None
 
@@ -78,6 +92,7 @@ class Pipeline:
         self.detector.reset()
         self.motion_detector.reset()
         self.settle_gate.reset()
+        self.watchdog.reset()
         self._last_emitted_blocks = None
         logger.debug("Pipeline state completely reset")
 
@@ -98,8 +113,9 @@ class Pipeline:
         self.last_frame = frame
 
         t1 = time.monotonic()
-        changed = self.detector.has_changed(frame.image)
-        moving = self.motion_detector.has_changed(frame.image)
+        thumb = self.detector.preprocess(frame.image)
+        changed = self.detector.has_changed(frame.image, preprocessed=thumb)
+        moving = self.motion_detector.has_changed(frame.image, preprocessed=thumb)
         t_diff = time.monotonic() - t1
 
         ready = self.settle_gate.observe(changed=changed, moving=moving)
@@ -107,26 +123,35 @@ class Pipeline:
             logger.debug("Settle gate waiting (changed=%s, moving=%s)", changed, moving)
             return None
 
+        # Check loop watchdog before OCR
+        cooldown = self.watchdog.record_run()
+        if cooldown > 0:
+            logger.debug("Loop watchdog active: cooling down for %.2fs", cooldown)
+            time.sleep(cooldown)
+
         # Screen settled: commit baseline reference to current frame
-        self.detector.commit(frame.image)
+        self.detector.commit(frame.image, preprocessed=thumb)
 
         t2 = time.monotonic()
         offset = (frame.region.left, frame.region.top)
         raw_blocks = self.ocr_engine.recognize(frame.image, offset=offset)
         self.last_ocr_time = time.monotonic() - t2
 
+        t_grp_start = time.monotonic()
         if self.merge_lines and raw_blocks:
             blocks = group_lines(raw_blocks, max_gap_ratio=self.max_gap_ratio)
         else:
             blocks = raw_blocks
+        self.last_group_time = time.monotonic() - t_grp_start
 
         # Stage 1 mode: No translator configured
         if self.translator is None:
-            logger.debug(
-                "Pipeline timings (no-translate): capture=%.3fs diff=%.3fs ocr=%.3fs blocks=%d",
-                t_cap,
-                t_diff,
-                self.last_ocr_time,
+            t_ocr_ms = int(round(self.last_ocr_time * 1000.0))
+            t_group_ms = int(round(self.last_group_time * 1000.0))
+            logger.info(
+                "frame: ocr=%dms group=%dms translate=0ms api_calls=0 cache_hits=0 blocks=%d",
+                t_ocr_ms,
+                t_group_ms,
                 len(blocks),
             )
             if self._last_emitted_blocks is not None and blocks_equivalent(
@@ -148,21 +173,104 @@ class Pipeline:
 
         t3 = time.monotonic()
         try:
-            texts = [b.text for b in blocks]
-            translated_texts = self.translator.translate(texts)
-            self.last_translate_time = time.monotonic() - t3
+            prev_emitted = (
+                self._last_emitted_blocks
+                if isinstance(self._last_emitted_blocks, list)
+                else None
+            )
 
-            translated_blocks = [
-                TranslatedBlock(source=b, translated_text=tr)
-                for b, tr in zip(blocks, translated_texts)
+            active_trans = [
+                p.translated_text
+                for p in (prev_emitted or [])
+                if isinstance(p, TranslatedBlock)
             ]
 
-            logger.debug(
-                "Pipeline timings: capture=%.3fs diff=%.3fs ocr=%.3fs translate=%.3fs blocks=%d",
-                t_cap,
-                t_diff,
-                self.last_ocr_time,
-                self.last_translate_time,
+            preserved_blocks: list[TranslatedBlock] = []
+            blocks_to_translate: list[TextBlock] = []
+
+            for b in blocks:
+                # 1. Skip if text already contains Vietnamese diacritics (overlay text or already Vietnamese)
+                if any(char in VIETNAMESE_DIACRITICS for char in b.text):
+                    if prev_emitted:
+                        matched_p = next(
+                            (p for p in prev_emitted if isinstance(p, TranslatedBlock) and bbox_overlaps(b.bbox, p.source.bbox)),
+                            None,
+                        )
+                        if matched_p is not None and matched_p not in preserved_blocks:
+                            preserved_blocks.append(matched_p)
+                    continue
+
+                # 2. Check if normalized text matches active translation closely (feedback loop prevention)
+                if is_similar_to_active_translation(b.text, active_trans, ratio_threshold=self.self_filter_ratio):
+                    if prev_emitted:
+                        matched_p = next(
+                            (p for p in prev_emitted if isinstance(p, TranslatedBlock) and bbox_overlaps(b.bbox, p.source.bbox)),
+                            None,
+                        )
+                        if matched_p is not None and matched_p not in preserved_blocks:
+                            preserved_blocks.append(matched_p)
+                    continue
+
+                # 3. Skip if text does not need translation (numbers, symbols, punctuation)
+                if not needs_translation(b.text, source_lang="en"):
+                    continue
+
+                # 4. Check if this block corresponds to an already active overlay translation
+                matched_prev: TranslatedBlock | None = None
+                if prev_emitted:
+                    for p in prev_emitted:
+                        if isinstance(p, TranslatedBlock) and bbox_overlaps(b.bbox, p.source.bbox):
+                            norm_b = strip_accents(b.text)
+                            if (
+                                norm_b == strip_accents(p.translated_text)
+                                or norm_b == strip_accents(p.source.text)
+                            ):
+                                matched_prev = p
+                                break
+
+                if matched_prev is not None:
+                    if matched_prev not in preserved_blocks:
+                        preserved_blocks.append(matched_prev)
+                else:
+                    blocks_to_translate.append(b)
+
+            hits_before = 0
+            if hasattr(self.translator, "cache") and hasattr(self.translator.cache, "hits"):
+                hits_before = self.translator.cache.hits
+
+            newly_translated: list[TranslatedBlock] = []
+            if blocks_to_translate:
+                texts = [b.text for b in blocks_to_translate]
+                translated_texts = self.translator.translate(texts)
+                newly_translated = [
+                    TranslatedBlock(source=b, translated_text=tr)
+                    for b, tr in zip(blocks_to_translate, translated_texts)
+                ]
+
+            self.last_translate_time = time.monotonic() - t3
+            translated_blocks = preserved_blocks + newly_translated
+            translated_blocks.sort(key=lambda b: (b.source.bbox[1], b.source.bbox[0]))
+
+            hits_after = 0
+            if hasattr(self.translator, "cache") and hasattr(self.translator.cache, "hits"):
+                hits_after = self.translator.cache.hits
+            cache_hits = max(0, hits_after - hits_before)
+
+            api_calls = 0
+            if hasattr(self.translator, "get_and_reset_api_calls"):
+                api_calls = self.translator.get_and_reset_api_calls()
+
+            t_ocr_ms = int(round(self.last_ocr_time * 1000.0))
+            t_group_ms = int(round(self.last_group_time * 1000.0))
+            t_trans_ms = int(round(self.last_translate_time * 1000.0))
+
+            logger.info(
+                "frame: ocr=%dms group=%dms translate=%dms api_calls=%d cache_hits=%d blocks=%d",
+                t_ocr_ms,
+                t_group_ms,
+                t_trans_ms,
+                api_calls,
+                cache_hits,
                 len(translated_blocks),
             )
 

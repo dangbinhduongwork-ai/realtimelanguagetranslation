@@ -88,11 +88,14 @@ def remap_blocks_to_screen(
         if orig_b <= orig_t:
             orig_b = orig_t + 1
 
+        orig_lh = round(b.line_height / scale, 2) if b.line_height > 0 else float(orig_b - orig_t)
         remapped.append(
             TextBlock(
                 text=b.text,
                 bbox=(orig_l, orig_t, orig_r, orig_b),
                 confidence=b.confidence,
+                line_height=orig_lh,
+                line_count=b.line_count,
             )
         )
 

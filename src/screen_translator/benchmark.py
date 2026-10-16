@@ -135,15 +135,17 @@ def run_bench(args: argparse.Namespace) -> int:
     print("                SCREEN TRANSLATOR PERFORMANCE BENCHMARK")
     print("=" * 68)
     print(f"  Frames measured    : {num_frames}")
+    print(f"  Capture backend    : {capturer.__class__.__name__} ({config.capture.backend})")
     print(f"  Active upscale     : {factor:.1f}x (config: {config.ocr.upscale})")
-    print(f"  Translation        : {'Enabled (Google)' if use_translation else 'Disabled (--no-translate)'}")
+    print(f"  Translation        : {'Enabled (batch: ' + config.translate.batch_mode + ')' if use_translation else 'Disabled (--no-translate)'}")
     print(f"  Approx CPU usage   : {cpu_percent:.1f}%")
     print("-" * 68)
     print(f"  {'Pipeline Stage':<22} {'Mean (ms)':>10} {'p95 (ms)':>10} {'Min (ms)':>10} {'Max (ms)':>10}")
     print("-" * 68)
 
+    cap_name = f"Capture ({config.capture.backend.upper()})"
     for name, data in [
-        ("Capture (MSS)", cap_ms),
+        (cap_name, cap_ms),
         ("Diff (cv2.absdiff)", diff_ms),
         ("OCR (RapidOCR)", ocr_ms),
         ("Grouping", grp_ms),
@@ -153,7 +155,7 @@ def run_bench(args: argparse.Namespace) -> int:
 
     if use_translation:
         m, p, mn, mx = stats(trn_ms)
-        print(f"  {'Translate (Google/LRU)':<22} {m:>10.2f} {p:>10.2f} {mn:>10.2f} {mx:>10.2f}")
+        print(f"  {'Translate (Batch/LRU)':<22} {m:>10.2f} {p:>10.2f} {mn:>10.2f} {mx:>10.2f}")
 
     print("-" * 68)
     m, p, mn, mx = stats(tot_ms)

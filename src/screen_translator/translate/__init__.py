@@ -37,8 +37,9 @@ def build_translator(cfg: Any) -> CachedTranslator:
     cache_size = getattr(translate_cfg, "cache_size", 2000)
 
     supported = ["google"]
+    batch_mode = getattr(translate_cfg, "batch_mode", "joined")
     if provider == "google":
-        inner = GoogleTranslator()
+        inner = GoogleTranslator(batch_mode=batch_mode)
         cache = TranslationCache(max_size=cache_size)
         return CachedTranslator(inner=inner, cache=cache)
 

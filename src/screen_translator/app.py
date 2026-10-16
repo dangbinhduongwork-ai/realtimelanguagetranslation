@@ -13,6 +13,7 @@ from PySide6.QtCore import QLockFile, QObject, QThread, QTimer, Qt, Signal
 from PySide6.QtWidgets import QApplication
 
 from screen_translator.capture.base import ScreenCapturer
+from screen_translator.capture.dxcam_capturer import DxcamCapturer
 from screen_translator.capture.frame_diff import ChangeDetector
 from screen_translator.capture.mss_capturer import MssCapturer
 from screen_translator.config import AppConfig
@@ -29,6 +30,7 @@ from screen_translator.ui.overlay_window import OverlayWindow
 from screen_translator.ui.region_selector import RegionSelector
 from screen_translator.ui.tray import TrayIcon
 from screen_translator.utils.coords import find_screen_with_largest_overlap
+from screen_translator.utils.loop_watchdog import LoopWatchdog
 from screen_translator.utils.win_utils import enable_dpi_awareness
 
 logger = logging.getLogger(__name__)
@@ -45,6 +47,9 @@ class WorkerBridge(QObject):
 def create_capturer(config: AppConfig, monitor: int | None = None) -> ScreenCapturer:
     """Create configured ScreenCapturer engine instance."""
     mon_idx = monitor if monitor is not None else config.capture.monitor
+    if config.capture.backend == "dxcam":
+        logger.debug("Creating DxcamCapturer for monitor %d", mon_idx)
+        return DxcamCapturer(monitor_index=mon_idx)
     logger.debug("Creating MssCapturer for monitor %d", mon_idx)
     return MssCapturer(monitor_index=mon_idx)
 
@@ -82,6 +87,7 @@ def create_pipeline(
     config: AppConfig,
     monitor: int | None = None,
     translate: bool = True,
+    watchdog: LoopWatchdog | None = None,
 ) -> Pipeline:
     """Create complete Pipeline instance from application configuration."""
     capturer = create_capturer(config, monitor=monitor)
@@ -98,6 +104,8 @@ def create_pipeline(
         translator=translator,
         settle_ms=config.capture.settle_ms,
         max_wait_ms=config.capture.max_wait_ms,
+        watchdog=watchdog,
+        self_filter_ratio=config.overlay.self_filter_ratio,
     )
 
 
@@ -152,35 +160,7 @@ def run_overlay(config: AppConfig, args: argparse.Namespace) -> int:
         mon_idx = getattr(args, "monitor", None) or config.capture.monitor
         target_screen = screens[mon_idx - 1] if (1 <= mon_idx <= len(screens)) else app.primaryScreen()
 
-    # 3. Pipeline & Worker assembly
-    use_translation = not getattr(args, "no_translate", False)
-    pipeline = create_pipeline(config, monitor=getattr(args, "monitor", None), translate=use_translation)
-
-    thread = QThread()
-    worker = PipelineWorker(pipeline=pipeline, fps=config.capture.fps, region=target_region)
-    worker.moveToThread(thread)
-
-    bridge = WorkerBridge()
-    bridge.start_worker.connect(worker.start, Qt.QueuedConnection)
-    bridge.stop_worker.connect(worker.stop, Qt.QueuedConnection)
-    bridge.set_region.connect(worker.set_region, Qt.QueuedConnection)
-
-    # 4. Overlay Window setup
-    overlay = OverlayWindow(
-        font_family=config.overlay.font_family,
-        font_size=config.overlay.font_size,
-        opacity=config.overlay.opacity,
-        background_color=config.overlay.background_color,
-        text_color=config.overlay.text_color,
-        show_region_border=config.overlay.show_region_border,
-    )
-    overlay.set_target_screen(target_screen)
-    if target_region is not None:
-        overlay.set_active_region(target_region)
-
-    worker.blocks_ready.connect(overlay.update_blocks, Qt.QueuedConnection)
-
-    # 5. Hotkeys, Tray Icon, and Region Selector
+    # 3. Hotkeys & Tray Icon setup
     hk_cfg = config.hotkeys
     toggle_hint = hk_cfg.toggle.replace("<", "").replace(">", "").upper()
     select_hint = hk_cfg.select_region.replace("<", "").replace(">", "").upper()
@@ -197,6 +177,43 @@ def run_overlay(config: AppConfig, args: argparse.Namespace) -> int:
         quit_key_hint=quit_hint,
     )
     region_selector = RegionSelector()
+
+    # 4. Pipeline & Worker assembly
+    watchdog = LoopWatchdog(
+        on_warning=lambda msg: tray.notify("Screen Translator", msg)
+    )
+    use_translation = not getattr(args, "no_translate", False)
+    pipeline = create_pipeline(
+        config,
+        monitor=getattr(args, "monitor", None),
+        translate=use_translation,
+        watchdog=watchdog,
+    )
+
+    thread = QThread()
+    worker = PipelineWorker(pipeline=pipeline, fps=config.capture.fps, region=target_region)
+    worker.moveToThread(thread)
+
+    bridge = WorkerBridge()
+    bridge.start_worker.connect(worker.start, Qt.QueuedConnection)
+    bridge.stop_worker.connect(worker.stop, Qt.QueuedConnection)
+    bridge.set_region.connect(worker.set_region, Qt.QueuedConnection)
+
+    # 5. Overlay Window setup
+    overlay = OverlayWindow(
+        font_family=config.overlay.font_family,
+        font_size=config.overlay.font_size,
+        opacity=config.overlay.opacity,
+        background_color=config.overlay.background_color,
+        text_color=config.overlay.text_color,
+        show_region_border=config.overlay.show_region_border,
+        tray_notifier=tray.notify,
+    )
+    overlay.set_target_screen(target_screen)
+    if target_region is not None:
+        overlay.set_active_region(target_region)
+
+    worker.blocks_ready.connect(overlay.update_blocks, Qt.QueuedConnection)
 
     # 6. Interaction Handlers
     current_region: Region | None = target_region

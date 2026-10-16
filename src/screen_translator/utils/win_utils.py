@@ -70,6 +70,44 @@ def enable_dpi_awareness() -> bool:
     return False
 
 
+def get_windows_build_number() -> int:
+    """Return the Windows OS build number (e.g. 19045), or 0 on non-Windows."""
+    if sys.platform != "win32":
+        return 0
+    try:
+        return sys.getwindowsversion().build
+    except Exception:
+        return 0
+
+
+def get_window_display_affinity(hwnd: int) -> int | None:
+    """Read back the current display affinity value of a window using GetWindowDisplayAffinity.
+
+    Args:
+        hwnd: Native window handle.
+
+    Returns:
+        int: Current affinity value (e.g. 0x11 for WDA_EXCLUDEFROMCAPTURE), or None on error.
+    """
+    if sys.platform != "win32":
+        return None
+
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        if not hasattr(user32, "GetWindowDisplayAffinity"):
+            return None
+        user32.GetWindowDisplayAffinity.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        user32.GetWindowDisplayAffinity.restype = wintypes.BOOL
+
+        val = wintypes.DWORD(0)
+        if user32.GetWindowDisplayAffinity(wintypes.HWND(hwnd), ctypes.byref(val)):
+            return val.value
+        return None
+    except Exception as exc:
+        logger.debug("GetWindowDisplayAffinity failed for HWND %s: %s", hwnd, exc)
+        return None
+
+
 def exclude_window_from_capture(hwnd: int) -> bool:
     """Exclude the window from screen capture using SetWindowDisplayAffinity.
 
@@ -86,23 +124,42 @@ def exclude_window_from_capture(hwnd: int) -> bool:
         logger.warning("exclude_window_from_capture called on non-Windows platform")
         return False
 
+    build = get_windows_build_number()
+    if 0 < build < 19041:
+        logger.warning(
+            "Windows build %d detected (< 19041): WDA_EXCLUDEFROMCAPTURE (0x11) is unsupported on this OS version.",
+            build,
+        )
+
     try:
-        user32 = ctypes.windll.user32
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
         user32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
         user32.SetWindowDisplayAffinity.restype = wintypes.BOOL
 
-        success = user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
-        if not success:
-            err = ctypes.get_last_error()
-            logger.warning(
-                "SetWindowDisplayAffinity failed with error code %d. "
-                "Window capture exclusion may not be supported on this Windows version.",
-                err,
-            )
-            return False
+        hwnd_val = wintypes.HWND(hwnd)
+        # 1. Primary: WDA_EXCLUDEFROMCAPTURE (0x11, Windows 10 Version 2004+)
+        success = bool(user32.SetWindowDisplayAffinity(hwnd_val, wintypes.DWORD(WDA_EXCLUDEFROMCAPTURE)))
+        if success:
+            logger.info("Window %s successfully excluded from screen capture (affinity 0x11)", hwnd)
+            return True
 
-        logger.info("Window %s successfully excluded from screen capture (affinity set)", hwnd)
-        return True
+        err1 = ctypes.get_last_error()
+        # 2. Secondary fallback: WDA_MONITOR (0x01, Windows 7+)
+        success = bool(user32.SetWindowDisplayAffinity(hwnd_val, wintypes.DWORD(0x01)))
+        if success:
+            logger.info("Window %s excluded from screen capture (fallback affinity 0x01)", hwnd)
+            return True
+
+        err2 = ctypes.get_last_error()
+        logger.warning(
+            "SetWindowDisplayAffinity failed on HWND %s (build: %d, 0x11 err: %d, 0x01 err: %d). "
+            "Window capture exclusion may not be supported on this Windows version.",
+            hwnd,
+            build,
+            err1,
+            err2,
+        )
+        return False
     except Exception as exc:
         logger.warning("Error excluding window %s from screen capture: %s", hwnd, exc)
         return False

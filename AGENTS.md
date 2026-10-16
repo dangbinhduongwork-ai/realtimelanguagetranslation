@@ -83,6 +83,15 @@ always-on-top overlay placed over the original text.
 - Icon rendering: `scripts/make_icon.py` drawing high-resolution 256x256 `assets/app.ico` using PySide6 `QPainter`.
 - Build automation: `scripts/build.ps1` supporting `-Clean`, `-Console`, and `-Zip` flags, executing the automated `--check --deep` smoke test, and creating distribution release archives.
 
+## Architecture Additions (Stage 5C)
+- `capture/dxcam_capturer.py`: Optional DirectX Desktop Duplication backend (`DxcamCapturer`) via `dxcam>=0.1.2`, providing hardware-accelerated capture isolated from DWM composition artifacts.
+- `utils/loop_watchdog.py`: `LoopWatchdog` tracking rolling OCR runs within 10s window; triggers warning, tray notification, and 2.0s cooldown sleep on feedback loop detection (>6 runs/10s).
+- `utils/overlay_filter.py`: Pure functions `strip_accents()`, `bbox_overlaps()`, and `is_similar_to_active_translation(ratio >= 0.75)` dropping or preserving active overlay text to prevent re-translation recursion.
+- `ui/layout.py`: Pure layout calculation functions `font_px_for(line_height_px)` (clamped 11..40, snapped to standard scale), `bucket_line_heights()` clustering adjacent heights within 15%, `bbox_iou()`, and `find_cached_layout()` for temporal typography stability.
+- `translate/google_translator.py`: Added `batch_mode: joined` concatenating requests into <= 4500 character chunks with newline delimiters, executed concurrently with ThreadPoolExecutor, and per-item fallback on line count mismatch.
+- `ui/overlay_window.py`: Re-applies capture exclusion on `WinIdChange` and screen switch, verifies affinity readback via `GetWindowDisplayAffinity()`, enforces typography policy (shrink <= 15%, extend box downward), and reuses cached layout for stable boxes.
+- Diagnostic CLI: Added `--check-exclusion [--backend mss|dxcam]` rendering a solid magenta test window, verifying capture exclusion, and logging Windows build number and Win32 affinity.
+
 ## Complete Project Structure
 ```
 screen-translator/
@@ -167,5 +176,6 @@ screen-translator/
 - **Stage 4 [DONE]**: Hotkeys, region selector, tray icon, state persistence, single-instance guard.
 - **Stage 5A [DONE]**: Adaptive upscale, motion settle gate, result stabilization, benchmark suite.
 - **Stage 5B [DONE]**: Standalone Windows executable packaging with PyInstaller (--onedir, windowed, assets/app.ico, build.ps1, automated smoke test & zip distribution).
+- **Stage 5C [DONE]**: Solved feedback loop (GetWindowDisplayAffinity verification, overlay self-text fuzzy filtering, loop watchdog with cooldown, dxcam backend), accelerated latency (joined newline batch translation <=4500 chars), and consistent overlay typography (snapped scale, bucketing, temporal layout cache).
 
 

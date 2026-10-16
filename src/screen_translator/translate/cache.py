@@ -151,3 +151,9 @@ class CachedTranslator(Translator):
                     results[idx] = translated_text
 
         return [res if res is not None else "" for res in results]
+
+    def get_and_reset_api_calls(self) -> int:
+        """Forward API call count retrieval to inner translator."""
+        if hasattr(self.inner, "get_and_reset_api_calls"):
+            return self.inner.get_and_reset_api_calls()
+        return 0

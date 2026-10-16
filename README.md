@@ -73,6 +73,22 @@ and exit with code `0`.
 
 ---
 
+## Verifying Capture Exclusion (`--check-exclusion`)
+
+To verify whether your Windows OS version and display configuration properly excludes our overlay window from screen capture (preventing feedback loops):
+
+```powershell
+$env:PYTHONPATH="src"
+python -m screen_translator --check-exclusion [--backend mss|dxcam]
+```
+
+- Shows a test magenta window (400x250) using the exact same Win32 flags as the overlay.
+- Waits 700 ms, captures the area with MSS or DXCam, and calculates the near-magenta pixel fraction.
+- Logs the Windows build number, `SetWindowDisplayAffinity` return value, and `GetWindowDisplayAffinity` readback.
+- Exits code `0` on **PASS** (magenta fraction < 1%), or `1` on **FAIL** (overlay captured).
+
+---
+
 ## Running Console Mode (Stage 2: OCR + Translation)
 
 Run the real-time screen capture, OCR, and English-to-Vietnamese translation pipeline in the console:
@@ -384,5 +400,6 @@ Screen Translator requires no registry changes or system installers. To complete
 - **Stage 4 [DONE]**: Global hotkeys, drag-to-select region selector, system tray icon, state persistence, single-instance guard.
 - **Stage 5A [DONE]**: Adaptive upscale, motion settle gate, result stabilization, benchmark suite.
 - **Stage 5B [DONE]**: Standalone Windows executable packaging with PyInstaller (--onedir, windowed, assets/app.ico, build.ps1, automated smoke test & zip distribution).
+- **Stage 5C [DONE]**: Solved feedback loop (GetWindowDisplayAffinity verification, overlay self-text fuzzy filtering, loop watchdog with cooldown, dxcam backend), accelerated latency (joined newline batch translation <=4500 chars), and consistent overlay typography (snapped scale, bucketing, temporal layout cache).
 
 

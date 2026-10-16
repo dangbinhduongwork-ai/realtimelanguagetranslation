@@ -25,6 +25,8 @@ def test_stacked_lines_merge() -> None:
     assert merged.text == "First line of paragraph second line follows here third line finishes thought"
     assert merged.bbox == (10, 10, 200, 80)
     assert round(merged.confidence, 2) == 0.90
+    assert merged.line_count == 3
+    assert merged.line_height == 20.0
 
 
 def test_two_columns_do_not_merge() -> None:

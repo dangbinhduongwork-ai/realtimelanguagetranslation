@@ -26,10 +26,11 @@ class ConfigError(ValueError):
 class CaptureConfig:
     """Screen capture parameters."""
 
+    backend: str = "mss"
     fps: int = 2
     monitor: int = 1
     region: tuple[int, int, int, int] | None = None
-    settle_ms: int = 300
+    settle_ms: int = 150
     max_wait_ms: int = 1500
 
 
@@ -48,7 +49,7 @@ class OcrConfig:
     min_confidence: float = 0.6
     merge_lines: bool = True
     max_gap_ratio: float = 0.8
-    upscale: str | float = "auto"
+    upscale: str | float = 1.0
     small_text_px: int = 14
 
 
@@ -59,6 +60,7 @@ class TranslateConfig:
     provider: str = "google"
     source_lang: str = "en"
     target_lang: str = "vi"
+    batch_mode: str = "joined"
     cache_size: int = 2000
 
 
@@ -72,6 +74,7 @@ class OverlayConfig:
     background_color: str = "#000000"
     text_color: str = "#FFFFFF"
     show_region_border: bool = True
+    self_filter_ratio: float = 0.75
 
 
 @dataclass(frozen=True)
@@ -106,6 +109,8 @@ class AppConfig:
 def _validate_config(config: AppConfig) -> None:
     """Validate all configuration attributes and raise ConfigError on violations."""
     c = config.capture
+    if c.backend not in {"mss", "dxcam"}:
+        raise ConfigError(f"Unsupported capture.backend: '{c.backend}'. Supported: ['mss', 'dxcam']")
     if not isinstance(c.fps, int) or not (1 <= c.fps <= 60):
         raise ConfigError(f"capture.fps must be an integer between 1 and 60, got: {c.fps}")
     if not isinstance(c.monitor, int) or c.monitor < 1:
@@ -148,6 +153,8 @@ def _validate_config(config: AppConfig) -> None:
     t = config.translate
     if t.provider not in {"google"}:
         raise ConfigError(f"Unsupported translate.provider: '{t.provider}'. Supported: ['google']")
+    if t.batch_mode not in {"joined", "per_item"}:
+        raise ConfigError(f"Unsupported translate.batch_mode: '{t.batch_mode}'. Supported: ['joined', 'per_item']")
     if not t.source_lang or not isinstance(t.source_lang, str):
         raise ConfigError("translate.source_lang must be a non-empty string")
     if not t.target_lang or not isinstance(t.target_lang, str):
@@ -168,6 +175,8 @@ def _validate_config(config: AppConfig) -> None:
         raise ConfigError(f"overlay.text_color must be hex format (#RRGGBB), got: '{ov.text_color}'")
     if not isinstance(ov.show_region_border, bool):
         raise ConfigError(f"overlay.show_region_border must be a boolean, got: {ov.show_region_border}")
+    if not isinstance(ov.self_filter_ratio, (int, float)) or not (0.0 <= ov.self_filter_ratio <= 1.0):
+        raise ConfigError(f"overlay.self_filter_ratio must be between 0.0 and 1.0, got: {ov.self_filter_ratio}")
 
     hk = config.hotkeys
     for name, val in [("toggle", hk.toggle), ("select_region", hk.select_region), ("quit", hk.quit)]:
@@ -218,10 +227,11 @@ def load_config(path: str | Path | None = None) -> AppConfig:
 
     app_config = AppConfig(
         capture=CaptureConfig(
+            backend=cap_raw.get("backend", "mss"),
             fps=cap_raw.get("fps", 2),
             monitor=cap_raw.get("monitor", 1),
             region=region_tuple,
-            settle_ms=cap_raw.get("settle_ms", 300),
+            settle_ms=cap_raw.get("settle_ms", 150),
             max_wait_ms=cap_raw.get("max_wait_ms", 1500),
         ),
         change_detection=ChangeDetectionConfig(**(data.get("change_detection", {}) or {})),

@@ -7,6 +7,7 @@ import threading
 import time
 from typing import Any
 
+import cv2
 import mss
 import numpy as np
 
@@ -85,9 +86,9 @@ class MssCapturer(ScreenCapturer):
 
         sct_img = sct.grab(capture_bbox)
 
-        # Convert raw BGRA pixels to contiguous 3-channel BGR numpy array
+        # Convert raw BGRA pixels to 3-channel BGR using OpenCV SIMD
         raw_bgra = np.asarray(sct_img, dtype=np.uint8)
-        bgr_image = np.ascontiguousarray(raw_bgra[:, :, :3])
+        bgr_image = cv2.cvtColor(raw_bgra, cv2.COLOR_BGRA2BGR)
 
         return Frame(
             image=bgr_image,

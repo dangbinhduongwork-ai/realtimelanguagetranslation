@@ -92,11 +92,26 @@ def group_lines(
         max_bottom = max(b.bbox[3] for b in para)
         mean_conf = sum(b.confidence for b in para) / len(para)
 
+        # Calculate median line height of original lines and total line count
+        line_heights = [
+            b.line_height if b.line_height > 0 else float(max(1, b.bbox[3] - b.bbox[1]))
+            for b in para
+        ]
+        sorted_h = sorted(line_heights)
+        n = len(sorted_h)
+        if n % 2 == 1:
+            med_h = sorted_h[n // 2]
+        else:
+            med_h = (sorted_h[n // 2 - 1] + sorted_h[n // 2]) / 2.0
+        line_cnt = sum(b.line_count for b in para)
+
         grouped_results.append(
             TextBlock(
                 text=merged_text,
                 bbox=(min_left, min_top, max_right, max_bottom),
                 confidence=round(mean_conf, 4),
+                line_height=round(med_h, 2),
+                line_count=line_cnt,
             )
         )
 

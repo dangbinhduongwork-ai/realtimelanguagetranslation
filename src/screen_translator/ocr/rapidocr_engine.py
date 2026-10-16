@@ -52,10 +52,44 @@ class RapidOcrEngine(OcrEngine):
             logger.info("Loading RapidOCR ONNX models into memory...")
             from rapidocr_onnxruntime import RapidOCR
 
-            self._engine = RapidOCR()
+            kwargs: dict[str, Any] = {}
+            try:
+                import onnxruntime as ort
+
+                providers = ort.get_available_providers()
+                logger.debug("Available ONNX execution providers: %s", providers)
+                if "DmlExecutionProvider" in providers:
+                    logger.info("DirectML GPU provider detected. Configuring RapidOCR with DirectML...")
+                    kwargs = {
+                        "det_use_dml": True,
+                        "cls_use_dml": True,
+                        "rec_use_dml": True,
+                    }
+                elif "CUDAExecutionProvider" in providers:
+                    logger.info("CUDA GPU provider detected. Configuring RapidOCR with CUDA...")
+                    kwargs = {
+                        "det_use_cuda": True,
+                        "cls_use_cuda": True,
+                        "rec_use_cuda": True,
+                    }
+            except Exception as exc:
+                logger.debug("Could not inspect onnxruntime providers: %s", exc)
+
+            try:
+                self._engine = RapidOCR(**kwargs)
+            except Exception as exc:
+                if kwargs:
+                    logger.warning(
+                        "Initializing RapidOCR with GPU acceleration failed: %s. Falling back to CPU.",
+                        exc,
+                    )
+                    self._engine = RapidOCR()
+                else:
+                    raise
+
             dummy_frame = np.zeros((48, 128, 3), dtype=np.uint8)
             try:
-                self._engine(dummy_frame)
+                self._engine(dummy_frame, use_cls=False)
             except Exception as exc:
                 logger.debug("Warmup dummy inference encountered: %s", exc)
             logger.info("RapidOCR engine ready.")
@@ -63,7 +97,7 @@ class RapidOcrEngine(OcrEngine):
     def _raw_recognize(self, image: np.ndarray) -> list[TextBlock]:
         """Execute RapidOCR inference on image in its local coordinate system."""
         try:
-            result, _ = self._engine(image)
+            result, _ = self._engine(image, use_cls=False)
         except Exception as exc:
             logger.error("RapidOCR inference failed: %s", exc)
             return []
@@ -102,11 +136,14 @@ class RapidOcrEngine(OcrEngine):
                 if bottom <= top:
                     bottom = top + 1
 
+                line_h = float(max(1, bottom - top))
                 blocks.append(
                     TextBlock(
                         text=text,
                         bbox=(left, top, right, bottom),
                         confidence=round(confidence, 4),
+                        line_height=line_h,
+                        line_count=1,
                     )
                 )
             except Exception as exc:
@@ -145,8 +182,8 @@ class RapidOcrEngine(OcrEngine):
         unscaled_first = remap_blocks_to_screen(raw_first, factor=factor, offset=(0, 0))
         median_h = calculate_median_line_height(unscaled_first)
 
-        # If probed at 1.0 and text is small (or none detected), re-run on 2x upscale
-        if factor == 1.0 and (median_h < self.small_text_px or not raw_first):
+        # If probed at 1.0 and text is detected but small, re-run on 2x upscale
+        if factor == 1.0 and (raw_first and median_h < self.small_text_px):
             img_2x = scale_image(image, 2.0)
             raw_2x = self._raw_recognize(img_2x)
             unscaled_2x = remap_blocks_to_screen(raw_2x, factor=2.0, offset=(0, 0))

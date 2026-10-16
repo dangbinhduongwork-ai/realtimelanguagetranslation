@@ -1,8 +1,9 @@
 capture:
+  backend: mss
   fps: 2
   monitor: 1
   region: null
-  settle_ms: 300
+  settle_ms: 150
   max_wait_ms: 1500
 
 change_detection:
@@ -13,13 +14,14 @@ ocr:
   min_confidence: 0.6
   merge_lines: true
   max_gap_ratio: 0.8
-  upscale: "auto"
+  upscale: 1.0
   small_text_px: 14
 
 translate:
   provider: google
   source_lang: en
   target_lang: vi
+  batch_mode: joined
   cache_size: 2000
 
 overlay:
@@ -29,6 +31,7 @@ overlay:
   background_color: "#000000"
   text_color: "#FFFFFF"
   show_region_border: true
+  self_filter_ratio: 0.75
 
 hotkeys:
   toggle: "<ctrl>+<alt>+t"

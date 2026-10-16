@@ -31,6 +31,7 @@ MODULES_TO_TEST = [
     "screen_translator.capture",
     "screen_translator.capture.base",
     "screen_translator.capture.mss_capturer",
+    "screen_translator.capture.dxcam_capturer",
     "screen_translator.capture.frame_diff",
     "screen_translator.capture.settle",
     "screen_translator.ocr",
@@ -44,6 +45,7 @@ MODULES_TO_TEST = [
     "screen_translator.translate.google_translator",
     "screen_translator.translate.cache",
     "screen_translator.ui",
+    "screen_translator.ui.layout",
     "screen_translator.ui.overlay_window",
     "screen_translator.ui.region_selector",
     "screen_translator.ui.tray",
@@ -52,6 +54,8 @@ MODULES_TO_TEST = [
     "screen_translator.benchmark",
     "screen_translator.utils",
     "screen_translator.utils.coords",
+    "screen_translator.utils.loop_watchdog",
+    "screen_translator.utils.overlay_filter",
     "screen_translator.utils.stabilization",
     "screen_translator.utils.win_utils",
 ]
@@ -123,6 +127,8 @@ def test_win_utils_callables() -> None:
     assert callable(win_utils.enable_dpi_awareness)
     assert callable(win_utils.exclude_window_from_capture)
     assert callable(win_utils.make_click_through)
+    assert callable(win_utils.get_windows_build_number)
+    assert callable(win_utils.get_window_display_affinity)
 
 
 def test_app_factories() -> None:
