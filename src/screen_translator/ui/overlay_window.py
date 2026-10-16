@@ -14,6 +14,7 @@ from screen_translator.ui.layout import bucket_line_heights, find_cached_layout,
 from screen_translator.utils.coords import native_to_local
 from screen_translator.utils.win_utils import (
     exclude_window_from_capture,
+    extend_frame_into_client,
     get_window_display_affinity,
     get_windows_build_number,
     make_click_through,
@@ -108,20 +109,26 @@ class OverlayWindow(QWidget):
         if hwnd <= 0:
             return
 
-        # 1. Exclude from capture BEFORE setting WS_EX_TRANSPARENT
+        # 1. Extend DWM frame into client area for transparency without WA_TranslucentBackground
+        res_dwm = extend_frame_into_client(hwnd)
+
+        # 2. Exclude from capture with WDA_EXCLUDEFROMCAPTURE (0x11)
         res_excl = exclude_window_from_capture(hwnd)
+
+        # 3. Make click-through (WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW)
         res_click = make_click_through(hwnd)
 
-        # 2. Verify affinity
+        # 4. Verify affinity
         aff = get_window_display_affinity(hwnd)
         build = get_windows_build_number()
         expected = 0x11 if build >= 19041 else 0x01
 
         logger.debug(
-            "OverlayWindow affinity applied (HWND=%s): click_through=%s, exclude=%s, affinity=%s",
+            "OverlayWindow affinity applied (HWND=%s): dwm=%s, exclude=%s, click_through=%s, affinity=%s",
             hwnd,
-            res_click,
+            res_dwm,
             res_excl,
+            res_click,
             f"{aff:#x}" if aff is not None else "None",
         )
 
@@ -262,11 +269,11 @@ class OverlayWindow(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setRenderHint(QPainter.TextAntialiasing)
 
-        # Draw active region border if enabled
+        # Draw active region border if enabled (shifted 1px outward so it never affects captured pixels)
         if has_region_border and self._active_region is not None:
             reg = self._active_region
             l, t, r, b = native_to_local((reg.left, reg.top, reg.right, reg.bottom), self._screen_origin, self._dpr)
-            border_rect = QRect(l, t, max(1, r - l), max(1, b - t))
+            border_rect = QRect(l - 1, t - 1, max(1, r - l + 2), max(1, b - t + 2))
             dashed_pen = QPen(QColor(0, 255, 128, 160), 1, Qt.DashLine)
             painter.setPen(dashed_pen)
             painter.setBrush(Qt.NoBrush)

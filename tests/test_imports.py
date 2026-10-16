@@ -125,6 +125,7 @@ def test_frame_model() -> None:
 def test_win_utils_callables() -> None:
     """Verify that win_utils public API functions exist and are callable."""
     assert callable(win_utils.enable_dpi_awareness)
+    assert callable(win_utils.extend_frame_into_client)
     assert callable(win_utils.exclude_window_from_capture)
     assert callable(win_utils.make_click_through)
     assert callable(win_utils.get_windows_build_number)

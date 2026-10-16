@@ -62,7 +62,10 @@ class TrayIcon(QSystemTrayIcon):
         self._current_region: Region | None = None
         self._last_notifications: dict[str, float] = {}
 
-        self.setIcon(_create_tray_icon(self._is_running))
+        self._icon_running = _create_tray_icon(is_running=True)
+        self._icon_paused = _create_tray_icon(is_running=False)
+
+        self.setIcon(self._icon_running)
         self._init_menu()
 
         self.activated.connect(self._on_activated)
@@ -102,7 +105,7 @@ class TrayIcon(QSystemTrayIcon):
         self._is_running = is_running
         self._current_region = region
 
-        self.setIcon(_create_tray_icon(is_running))
+        self.setIcon(self._icon_running if is_running else self._icon_paused)
         toggle_label = f"Pause ({self.toggle_key_hint})" if is_running else f"Start ({self.toggle_key_hint})"
         self._toggle_action.setText(toggle_label)
 

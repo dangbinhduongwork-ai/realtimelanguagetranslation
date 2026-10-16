@@ -68,3 +68,16 @@ def test_none_and_empty_sequences() -> None:
     b1 = [TextBlock(text="Hello", bbox=(10, 20, 100, 50), confidence=0.9)]
     assert blocks_equivalent(b1, None, tol_px=4) is False
     assert blocks_equivalent(None, b1, tol_px=4) is False
+
+
+def test_out_of_order_blocks_equivalent() -> None:
+    """Test that blocks presented in different order but matching coordinates and text return True."""
+    b1 = [
+        TextBlock(text="First", bbox=(10, 20, 100, 50), confidence=0.9),
+        TextBlock(text="Second", bbox=(10, 60, 100, 90), confidence=0.9),
+    ]
+    b2 = [
+        TextBlock(text="Second", bbox=(11, 59, 102, 91), confidence=0.9),
+        TextBlock(text="First", bbox=(10, 21, 99, 49), confidence=0.9),
+    ]
+    assert blocks_equivalent(b1, b2, tol_px=4) is True

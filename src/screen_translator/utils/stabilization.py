@@ -6,6 +6,16 @@ from collections.abc import Sequence
 from screen_translator.models import TextBlock, TranslatedBlock
 
 
+def _extract_bbox(b: TextBlock | TranslatedBlock) -> tuple[int, int, int, int]:
+    """Extract (left, top, right, bottom) bounding box from TextBlock or TranslatedBlock."""
+    return b.source.bbox if isinstance(b, TranslatedBlock) else b.bbox
+
+
+def _extract_text(b: TextBlock | TranslatedBlock) -> str:
+    """Extract text content from TextBlock or TranslatedBlock."""
+    return b.translated_text if isinstance(b, TranslatedBlock) else b.text
+
+
 def blocks_equivalent(
     prev: Sequence[TextBlock | TranslatedBlock] | None,
     new: Sequence[TextBlock | TranslatedBlock] | None,
@@ -16,7 +26,7 @@ def blocks_equivalent(
     Returns True if:
     - Both sequences are None or both are empty.
     - Both sequences have identical item count.
-    - Each block pair has identical text (translated_text or text).
+    - Each block pair sorted by (top, left) has identical text.
     - Each block pair's bounding box coordinates differ by at most `tol_px`.
 
     Args:
@@ -34,16 +44,16 @@ def blocks_equivalent(
     if len(prev) != len(new):
         return False
 
-    for b_prev, b_new in zip(prev, new):
-        # 1. Compare text content
-        text_p = b_prev.translated_text if isinstance(b_prev, TranslatedBlock) else b_prev.text
-        text_n = b_new.translated_text if isinstance(b_new, TranslatedBlock) else b_new.text
-        if text_p != text_n:
+    # Sort both sequences by canonical coordinate order (top, left) before comparing
+    sorted_prev = sorted(prev, key=lambda b: (_extract_bbox(b)[1], _extract_bbox(b)[0]))
+    sorted_new = sorted(new, key=lambda b: (_extract_bbox(b)[1], _extract_bbox(b)[0]))
+
+    for b_prev, b_new in zip(sorted_prev, sorted_new):
+        if _extract_text(b_prev) != _extract_text(b_new):
             return False
 
-        # 2. Compare bounding box coordinates within tolerance
-        bbox_p = b_prev.source.bbox if isinstance(b_prev, TranslatedBlock) else b_prev.bbox
-        bbox_n = b_new.source.bbox if isinstance(b_new, TranslatedBlock) else b_new.bbox
+        bbox_p = _extract_bbox(b_prev)
+        bbox_n = _extract_bbox(b_new)
 
         for cp, cn in zip(bbox_p, bbox_n):
             if abs(cp - cn) > tol_px:

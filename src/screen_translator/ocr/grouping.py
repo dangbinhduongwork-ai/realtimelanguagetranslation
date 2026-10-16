@@ -42,6 +42,24 @@ def _can_merge(prev: TextBlock, curr: TextBlock, max_gap_ratio: float) -> bool:
     return True
 
 
+def _merge_paragraph_texts(para: list[TextBlock]) -> str:
+    """Merge lines in a paragraph, handling hyphenated word splits at line breaks (de-hyphenation)."""
+    lines = [b.text.strip() for b in para if b.text.strip()]
+    if not lines:
+        return ""
+
+    merged = lines[0]
+    for line in lines[1:]:
+        # If merged ends with hyphen and the character before '-' is not whitespace or another hyphen
+        if merged.endswith("-") and len(merged) >= 2 and not merged[-2].isspace() and merged[-2] != "-":
+            # De-hyphenate: strip trailing hyphen and join directly without space
+            merged = merged[:-1] + line
+        else:
+            merged = f"{merged} {line}"
+
+    return merged
+
+
 def group_lines(
     blocks: list[TextBlock],
     max_gap_ratio: float = 0.8,
@@ -82,7 +100,7 @@ def group_lines(
 
     grouped_results: list[TextBlock] = []
     for para in paragraphs:
-        merged_text = " ".join(b.text.strip() for b in para if b.text.strip())
+        merged_text = _merge_paragraph_texts(para)
         if not merged_text:
             continue
 

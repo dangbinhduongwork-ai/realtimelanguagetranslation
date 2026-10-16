@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import difflib
 import logging
 import threading
 import time
@@ -215,16 +216,17 @@ class Pipeline:
                 if not needs_translation(b.text, source_lang="en"):
                     continue
 
-                # 4. Check if this block corresponds to an already active overlay translation
+                # 4. Check if this block corresponds to an already active overlay translation via fuzzy matching
                 matched_prev: TranslatedBlock | None = None
                 if prev_emitted:
+                    norm_b = strip_accents(b.text)
                     for p in prev_emitted:
                         if isinstance(p, TranslatedBlock) and bbox_overlaps(b.bbox, p.source.bbox):
-                            norm_b = strip_accents(b.text)
-                            if (
-                                norm_b == strip_accents(p.translated_text)
-                                or norm_b == strip_accents(p.source.text)
-                            ):
+                            norm_src = strip_accents(p.source.text)
+                            norm_tr = strip_accents(p.translated_text)
+                            ratio_src = difflib.SequenceMatcher(None, norm_b, norm_src).ratio()
+                            ratio_tr = difflib.SequenceMatcher(None, norm_b, norm_tr).ratio()
+                            if ratio_src >= 0.80 or ratio_tr >= 0.80:
                                 matched_prev = p
                                 break
 
@@ -233,6 +235,17 @@ class Pipeline:
                         preserved_blocks.append(matched_prev)
                 else:
                     blocks_to_translate.append(b)
+
+            # Lock state when no new blocks require translation: preserve existing overlay and avoid repainting
+            if not blocks_to_translate and preserved_blocks:
+                logger.debug(
+                    "Static screen: %d preserved blocks remain stable; skipping re-emission",
+                    len(preserved_blocks),
+                )
+                preserved_blocks.sort(key=lambda b: (b.source.bbox[1], b.source.bbox[0]))
+                self._last_emitted_blocks = preserved_blocks
+                self.detector.commit(frame.image, preprocessed=thumb)
+                return None
 
             hits_before = 0
             if hasattr(self.translator, "cache") and hasattr(self.translator.cache, "hits"):
@@ -250,6 +263,9 @@ class Pipeline:
             self.last_translate_time = time.monotonic() - t3
             translated_blocks = preserved_blocks + newly_translated
             translated_blocks.sort(key=lambda b: (b.source.bbox[1], b.source.bbox[0]))
+
+            # Commit baseline after translation to ensure next frames have diff = 0
+            self.detector.commit(frame.image, preprocessed=thumb)
 
             hits_after = 0
             if hasattr(self.translator, "cache") and hasattr(self.translator.cache, "hits"):
@@ -377,15 +393,32 @@ class PipelineWorker(QObject):
             return
 
         t_start = time.monotonic()
+        res = None
         try:
             res = self.pipeline.step(region=self.region)
             if res is not None:
                 self.blocks_ready.emit(res)
+                # Translate Once & Hold:
+                # When a region is selected, after getting the translated blocks,
+                # hold the result on screen and stop the worker loop immediately!
+                if self.region is not None:
+                    logger.info(
+                        "Translate Once & Hold: Completed translation for selected region (%d blocks), stopping worker loop.",
+                        len(res),
+                    )
+                    self.stop()
+                    return
         except Exception as exc:
             logger.error("Error in PipelineWorker step: %s", exc, exc_info=True)
             self.error.emit(str(exc))
 
         if not self._is_running:
+            return
+
+        # If region is set and waiting for screen to settle, check quickly (50ms) to deliver translation fast
+        if self.region is not None and res is None:
+            if self._timer is not None:
+                self._timer.start(50)
             return
 
         elapsed_ms = (time.monotonic() - t_start) * 1000.0

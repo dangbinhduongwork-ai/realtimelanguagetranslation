@@ -108,20 +108,35 @@ def _direct_google_translate(text: str, source: str = "en", target: str = "vi") 
         except requests.HTTPError as exc:
             last_error = exc
             status = exc.response.status_code if exc.response is not None else 0
-            if status in (429, 403):
-                logger.warning(
-                    "Google Translate client '%s' raised HTTP %d: %s. Rotating...",
-                    client_name,
-                    status,
-                    exc,
-                )
-                with _client_lock:
-                    _current_client_idx = (start_idx + attempt + 1) % len(DEFAULT_CLIENTS)
-                continue
-            raise
+            logger.warning(
+                "Google Translate client '%s' raised HTTP %d: %s. Rotating...",
+                client_name,
+                status,
+                exc,
+            )
+            with _client_lock:
+                _current_client_idx = (start_idx + attempt + 1) % len(DEFAULT_CLIENTS)
+            continue
+        except requests.RequestException as exc:
+            last_error = exc
+            logger.warning(
+                "Google Translate client '%s' request error: %s. Rotating...",
+                client_name,
+                exc,
+            )
+            with _client_lock:
+                _current_client_idx = (start_idx + attempt + 1) % len(DEFAULT_CLIENTS)
+            continue
         except Exception as exc:
             last_error = exc
-            raise
+            logger.warning(
+                "Google Translate client '%s' unexpected error: %s. Rotating...",
+                client_name,
+                exc,
+            )
+            with _client_lock:
+                _current_client_idx = (start_idx + attempt + 1) % len(DEFAULT_CLIENTS)
+            continue
 
     if last_error:
         raise last_error

@@ -97,8 +97,6 @@ def get_window_display_affinity(hwnd: int) -> int | None:
         if not hasattr(user32, "GetWindowDisplayAffinity"):
             return None
         user32.GetWindowDisplayAffinity.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
-        user32.GetWindowDisplayAffinity.restype = wintypes.BOOL
-
         val = wintypes.DWORD(0)
         if user32.GetWindowDisplayAffinity(wintypes.HWND(hwnd), ctypes.byref(val)):
             return val.value
@@ -106,6 +104,39 @@ def get_window_display_affinity(hwnd: int) -> int | None:
     except Exception as exc:
         logger.debug("GetWindowDisplayAffinity failed for HWND %s: %s", hwnd, exc)
         return None
+
+
+class MARGINS(ctypes.Structure):
+    """Win32 MARGINS structure for DwmExtendFrameIntoClientArea."""
+
+    _fields_ = [
+        ("cxLeftWidth", ctypes.c_int),
+        ("cxRightWidth", ctypes.c_int),
+        ("cyTopHeight", ctypes.c_int),
+        ("cyBottomHeight", ctypes.c_int),
+    ]
+
+
+def extend_frame_into_client(hwnd: int) -> bool:
+    """Mở rộng khung DWM trong suốt toàn bộ client area."""
+    if sys.platform != "win32":
+        return False
+    try:
+        dwmapi = ctypes.WinDLL("dwmapi", use_last_error=True)
+        m = MARGINS(-1, -1, -1, -1)
+        res = dwmapi.DwmExtendFrameIntoClientArea(wintypes.HWND(hwnd), ctypes.byref(m))
+        if res == 0:
+            logger.info("DWM frame extended into client area for HWND %s", hwnd)
+            return True
+        logger.warning(
+            "DwmExtendFrameIntoClientArea failed for HWND %s with HRESULT 0x%08X",
+            hwnd,
+            res & 0xFFFFFFFF,
+        )
+        return False
+    except Exception as exc:
+        logger.debug("DwmExtendFrameIntoClientArea exception on HWND %s: %s", hwnd, exc)
+        return False
 
 
 def exclude_window_from_capture(hwnd: int) -> bool:

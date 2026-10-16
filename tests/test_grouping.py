@@ -83,3 +83,24 @@ def test_reading_order_is_correct() -> None:
     assert len(result) == 2
     assert result[0].text == "Paragraph 1 Line 1 Paragraph 1 Line 2"
     assert result[1].text == "Paragraph 2 Line 2"
+
+
+def test_dehyphenation_in_paragraph() -> None:
+    """Test that hyphenated line breaks are joined without hyphens or spaces."""
+    line1 = TextBlock(text="We are currently connec-", bbox=(10, 10, 200, 30), confidence=0.95)
+    line2 = TextBlock(text="tion oriented in our de-", bbox=(10, 35, 200, 55), confidence=0.95)
+    line3 = TextBlock(text="velopment process.", bbox=(10, 60, 200, 80), confidence=0.95)
+
+    result = group_lines([line1, line2, line3], max_gap_ratio=0.8)
+    assert len(result) == 1
+    assert result[0].text == "We are currently connection oriented in our development process."
+
+
+def test_dash_with_space_preserved() -> None:
+    """Test that dashes preceded by spaces are preserved as thought separators."""
+    line1 = TextBlock(text="Key point 1 -", bbox=(10, 10, 200, 30), confidence=0.95)
+    line2 = TextBlock(text="important detail follows", bbox=(10, 35, 200, 55), confidence=0.95)
+
+    result = group_lines([line1, line2], max_gap_ratio=0.8)
+    assert len(result) == 1
+    assert result[0].text == "Key point 1 - important detail follows"

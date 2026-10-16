@@ -122,6 +122,7 @@ def run_check_exclusion(backend: str = "mss") -> int:
     from screen_translator.models import Region
     from screen_translator.utils.win_utils import (
         exclude_window_from_capture,
+        extend_frame_into_client,
         get_window_display_affinity,
         get_windows_build_number,
         make_click_through,
@@ -144,13 +145,13 @@ def run_check_exclusion(backend: str = "mss") -> int:
                 | Qt.Tool
                 | Qt.WindowTransparentForInput,
             )
-            self.setAttribute(Qt.WA_TranslucentBackground, True)
             self.setAttribute(Qt.WA_ShowWithoutActivating, True)
             self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
             self.setGeometry(200, 200, 400, 250)
 
         def paintEvent(self, event) -> None:
             painter = QPainter(self)
+            painter.fillRect(self.rect(), QColor(0, 0, 0, 0))
             painter.fillRect(0, 0, 400, 250, QColor(255, 0, 255))
             painter.end()
 
@@ -161,7 +162,8 @@ def run_check_exclusion(backend: str = "mss") -> int:
     hwnd = int(window.winId())
     build = get_windows_build_number()
 
-    # Apply exclusion then click-through (matching app order)
+    # Apply DWM extension, exclusion, then click-through (matching app order)
+    res_dwm = extend_frame_into_client(hwnd)
     res_excl = exclude_window_from_capture(hwnd)
     res_click = make_click_through(hwnd)
     aff = get_window_display_affinity(hwnd)

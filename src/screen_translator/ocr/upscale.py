@@ -39,7 +39,7 @@ def calculate_mean_confidence(blocks: Sequence[TextBlock]) -> float:
 
 
 def scale_image(image: np.ndarray, factor: float) -> np.ndarray:
-    """Resize image array using bicubic interpolation.
+    """Resize image array using bilinear interpolation for optimal speed.
 
     Args:
         image: Original BGR or grayscale numpy image.
@@ -54,7 +54,7 @@ def scale_image(image: np.ndarray, factor: float) -> np.ndarray:
     h, w = image.shape[:2]
     new_w = max(1, int(round(w * factor)))
     new_h = max(1, int(round(h * factor)))
-    return cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+    return cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
 
 
 def remap_blocks_to_screen(
