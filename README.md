@@ -1,3 +1,7 @@
+## 🚀 Tải về nhanh (Quick Download)
+
+Tải phiên bản mới nhất cho Windows 10/11 (Không cần cài đặt Python):
+👉 **[Tải ScreenTranslator v1.0.0 (Windows 64-bit)]([https://github.com/dangbinhduongwork-ai/realtimelanguagetranslation/releases/latest](https://github.com/dangbinhduongwork-ai/realtimelanguagetranslation/releases/tag/v1.0.0))**
 # Screen Translator
 
 A Windows 10/11 desktop application that continuously reads English text on your screen (OCR), translates it to Vietnamese in real-time, and displays the translation as a transparent, click-through, always-on-top overlay placed directly over the original text.
